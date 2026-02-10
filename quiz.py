@@ -54,6 +54,24 @@ def _count_acertos_ao_menos_uma(user_id: str, qids: list[str]) -> int:
     status = get_question_status_map(user_id, qids)
     return sum(1 for st in status.values() if st.get("acertos", 0) > 0)
 
+def _progress_icon(ok: int, total: int) -> str:
+    """
+    Regra definida:
+    - se ok == 0 -> ⚪ (branca)
+    - se ok/total > 0.5 -> 🟡 (amarela)
+    - se ok == total (total>0) -> ✅ (verde)
+    Obs: 1..50% continua ⚪ (branca), conforme solicitado.
+    """
+    if total <= 0:
+        return "⚪"
+    if ok >= total:
+        return "✅"
+    if ok == 0:
+        return "⚪"
+    if (ok / total) > 0.5:
+        return "🟡"
+    return "⚪"
+
 # =========================
 # UI: temas / subtemas
 # =========================
@@ -66,8 +84,9 @@ async def enviar_temas(update, context):
         total = len(qids)
         ok = _count_acertos_ao_menos_uma(user_id, qids)
 
-        # FORMATO CURTO
-        label = f"{tema} ({total} | ✅{ok})"
+        icon = _progress_icon(ok, total)
+        # FORMATO CURTO + ÍCONE DINÂMICO
+        label = f"{tema} ({total} | {icon}{ok})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"TEMA|{tema}")])
 
     await update.message.reply_text(
@@ -87,8 +106,9 @@ async def enviar_subtemas(update, context, tema: str):
         total = len(qids)
         ok = _count_acertos_ao_menos_uma(user_id, qids)
 
-        # FORMATO CURTO
-        label = f"{s} ({total} | ✅{ok})"
+        icon = _progress_icon(ok, total)
+        # FORMATO CURTO + ÍCONE DINÂMICO
+        label = f"{s} ({total} | {icon}{ok})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"SUB|{s}")])
 
     await update.callback_query.edit_message_text(
@@ -187,5 +207,6 @@ async def enviar_proxima(update, context):
         reply_markup=InlineKeyboardMarkup(teclado),
         parse_mode="Markdown"
     )
+
 
 
