@@ -109,11 +109,12 @@ async def enviar_temas(update, context):
         qids = TEMA_TO_QIDS.get(tema, [])
         total = len(qids)
 
-        acertos, erros = _count_acertos_erros(user_id, qids)
-        icon = _progress_icon(acertos, total)
+        ok = _count_acertos_ao_menos_uma(user_id, qids)  # <-- NÃO REMOVER
+        icon = _progress_icon(ok, total)
 
-        # ✅ agora mostra acerto e erro reais (não zera)
+        # texto: tema à esquerda, contador no final
         label = f"{tema}  |  {icon} {ok}/{total}"
+
         keyboard.append([InlineKeyboardButton(label, callback_data=f"TEMA|{tema}")])
 
     await update.message.reply_text(
@@ -121,6 +122,7 @@ async def enviar_temas(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
+
 
 
 async def enviar_subtemas(update, context, tema: str):
@@ -133,8 +135,8 @@ async def enviar_subtemas(update, context, tema: str):
         qids = SUBTEMA_TO_QIDS.get((tema, s), [])
         total = len(qids)
 
-        acertos, erros = _count_acertos_erros(user_id, qids)
-        icon = _progress_icon(acertos, total)
+        ok = _count_acertos_ao_menos_uma(user_id, qids)  # <-- NÃO REMOVER
+        icon = _progress_icon(ok, total)
 
         label = f"{s}  |  {icon} {ok}/{total}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"SUB|{s}")])
@@ -144,6 +146,7 @@ async def enviar_subtemas(update, context, tema: str):
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
+
 
 
 # =========================
