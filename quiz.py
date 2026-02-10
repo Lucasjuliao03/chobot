@@ -82,21 +82,20 @@ def _count_acertos_erros(user_id: str, qids: list[str]) -> tuple[int, int]:
 
 def _progress_icon(ok: int, total: int) -> str:
     """
-    Regra definida:
-    - se ok == 0 -> ⚪ (branca)
-    - se ok/total > 0.5 -> 🟡 (amarela)
-    - se ok == total (total>0) -> ✅ (verde)
-    Obs: 1..50% continua ⚪ (branca), conforme solicitado.
+    Regra:
+    - ⚪ se total==0 ou ok/total <= 50%
+    - 🟡 se 50% < ok/total < 100%
+    - ✅ se 100%
     """
     if total <= 0:
         return "⚪"
-    if ok >= total:
+    ratio = ok / total
+    if ratio >= 1.0:
         return "✅"
-    if ok == 0:
-        return "⚪"
-    if (ok / total) > 0.5:
+    if ratio > 0.5:
         return "🟡"
     return "⚪"
+
 
 
 # =========================
@@ -114,7 +113,7 @@ async def enviar_temas(update, context):
         icon = _progress_icon(acertos, total)
 
         # ✅ agora mostra acerto e erro reais (não zera)
-        label = f"{tema} ({total} | {icon} ✅{acertos} ❌{erros})"
+        label = f"{tema}  |  {icon} {ok}/{total}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"TEMA|{tema}")])
 
     await update.message.reply_text(
@@ -137,7 +136,7 @@ async def enviar_subtemas(update, context, tema: str):
         acertos, erros = _count_acertos_erros(user_id, qids)
         icon = _progress_icon(acertos, total)
 
-        label = f"{s} ({total} | {icon} ✅{acertos} ❌{erros})"
+        label = f"{s}  |  {icon} {ok}/{total}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"SUB|{s}")])
 
     await update.callback_query.edit_message_text(
