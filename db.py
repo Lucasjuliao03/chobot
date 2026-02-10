@@ -163,12 +163,8 @@ def get_topic_breakdown(user_id: str, limit: int = 20):
 
 def get_question_status_map(user_id: str, qids: list[str]) -> dict[str, dict]:
     """
-    Retorna um mapa:
     qid -> {tentativas, ultima_correta, acertos}
-
-    IMPORTANTE:
-    - Para contar "✅ acertada ao menos uma vez", use acertos > 0.
-    - Para priorização (erradas/ok), pode continuar usando ultima_correta.
+    - Para "✅ ao menos uma vez": acertos > 0
     """
     if not qids:
         return {}
@@ -191,4 +187,18 @@ def get_question_status_map(user_id: str, qids: list[str]) -> dict[str, dict]:
             "acertos": int(acertos),
         }
     return out
+
+def reset_user_stats(user_id: str) -> None:
+    """
+    Zera COMPLETAMENTE as estatísticas do usuário:
+    - user_stats
+    - user_question
+    - user_topic_stats
+    """
+    with _conn() as con:
+        cur = con.cursor()
+        cur.execute("DELETE FROM user_stats WHERE user_id = ?", (user_id,))
+        cur.execute("DELETE FROM user_question WHERE user_id = ?", (user_id,))
+        cur.execute("DELETE FROM user_topic_stats WHERE user_id = ?", (user_id,))
+        con.commit()
 

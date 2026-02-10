@@ -7,19 +7,16 @@ from db import get_question_status_map
 df = pd.read_excel("perguntascho2026.xlsx")
 df.columns = df.columns.str.strip()
 
-# garante ID como string sem espaços
 if "ID" not in df.columns:
     raise RuntimeError("Coluna 'ID' não encontrada no Excel.")
-df["ID"] = df["ID"].astype(str).str.strip()
 
-# normaliza Tema/Subtema como string clean (evita divergências por espaço)
+df["ID"] = df["ID"].astype(str).str.strip()
 df["Tema"] = df["Tema"].astype(str).str.strip()
 df["Subtema"] = df["Subtema"].astype(str).str.strip()
 
-# cria mapa estático id -> dict(row)
 QUESTIONS_BY_ID = {str(r["ID"]): r.dropna().to_dict() for _, r in df.iterrows()}
 
-# precomputações para UI rápida
+# precomputações
 TEMAS = sorted(df["Tema"].dropna().unique().tolist())
 TEMA_TO_QIDS = {
     tema: df[df["Tema"] == tema]["ID"].astype(str).str.strip().tolist()
@@ -29,7 +26,7 @@ TEMA_TO_SUBTEMAS = {
     tema: sorted(df[df["Tema"] == tema]["Subtema"].dropna().unique().tolist())
     for tema in TEMAS
 }
-SUBTEMA_TO_QIDS = {}  # (tema, subtema) -> [qids]
+SUBTEMA_TO_QIDS = {}
 for tema in TEMAS:
     for sub in TEMA_TO_SUBTEMAS[tema]:
         SUBTEMA_TO_QIDS[(tema, sub)] = (
@@ -54,15 +51,11 @@ def get_correct_and_explanation(qid: str) -> tuple[str, str]:
     return correta, explicacao
 
 def _count_acertos_ao_menos_uma(user_id: str, qids: list[str]) -> int:
-    """
-    Conta quantas questões deste conjunto o usuário já acertou ao menos 1 vez.
-    Regra: acertos > 0.
-    """
     status = get_question_status_map(user_id, qids)
     return sum(1 for st in status.values() if st.get("acertos", 0) > 0)
 
 # =========================
-# UI: temas / subtemas / início
+# UI: temas / subtemas
 # =========================
 async def enviar_temas(update, context):
     user_id = str(update.effective_user.id)
@@ -73,8 +66,8 @@ async def enviar_temas(update, context):
         total = len(qids)
         ok = _count_acertos_ao_menos_uma(user_id, qids)
 
-        # Exibição: "Tema — 90 questões (✅ 20)"
-        label = f"{tema} — {total} questões (✅ {ok})"
+        # FORMATO CURTO
+        label = f"{tema} ({total} | ✅{ok})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"TEMA|{tema}")])
 
     await update.message.reply_text(
@@ -94,8 +87,8 @@ async def enviar_subtemas(update, context, tema: str):
         total = len(qids)
         ok = _count_acertos_ao_menos_uma(user_id, qids)
 
-        # Exibição: "Subtema — 30 questões (✅ 30)"
-        label = f"{s} — {total} questões (✅ {ok})"
+        # FORMATO CURTO
+        label = f"{s} ({total} | ✅{ok})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"SUB|{s}")])
 
     await update.callback_query.edit_message_text(
@@ -132,14 +125,12 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
         else:
             acertadas.append(qid)
 
-    # embaralha dentro de cada grupo
     nao_resp = base[base["ID"].isin(nao_resp)].sample(frac=1).to_dict("records")
     erradas = base[base["ID"].isin(erradas)].sample(frac=1).to_dict("records")
     acertadas = base[base["ID"].isin(acertadas)].sample(frac=1).to_dict("records")
 
     fila = (nao_resp + erradas + acertadas)[:limite]
 
-    # padroniza cada item da fila: garante ID string clean
     fila_clean = []
     for item in fila:
         item["ID"] = str(item.get("ID", "")).strip()
@@ -161,7 +152,7 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
     await enviar_proxima(update, context)
 
 # =========================
-# enviar próxima (usa fila em chat_data)
+# enviar próxima
 # =========================
 async def enviar_proxima(update, context):
     quiz = context.chat_data.get("quiz")
@@ -196,4 +187,5 @@ async def enviar_proxima(update, context):
         reply_markup=InlineKeyboardMarkup(teclado),
         parse_mode="Markdown"
     )
+
 
