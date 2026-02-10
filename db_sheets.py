@@ -38,14 +38,19 @@ def init_db():
     """
     ws = _get_sheet()
     headers = ws.row_values(1)
-    if not headers or headers[:7] != ["user_id", "qid", "acertou", "marcada", "tema", "subtema", "timestamp"]:
+
+    expected = ["user_id", "qid", "acertou", "marcada", "tema", "subtema", "timestamp"]
+
+    # se não tiver header ou estiver diferente, zera e recria (padrão)
+    if not headers or headers[:7] != expected:
         ws.clear()
-        ws.append_row(["user_id", "qid", "acertou", "marcada", "tema", "subtema", "timestamp"])
+        ws.append_row(expected)
 
 
 def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str, subtema: str):
     ws = _get_sheet()
     ts = datetime.now(timezone.utc).isoformat()
+
     ws.append_row([
         str(user_id),
         str(qid),
@@ -59,15 +64,16 @@ def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str
 
 def _all_rows():
     ws = _get_sheet()
-    # retorna lista de dicts a partir do cabeçalho
-    return ws.get_all_records()  # usa linha 1 como header
+    # retorna lista de dicts a partir do cabeçalho (linha 1)
+    return ws.get_all_records()
 
 
 def get_overall_progress(user_id: str):
     rows = _all_rows()
+    uid = str(user_id)
+
     acertos = 0
     erros = 0
-    uid = str(user_id)
 
     for r in rows:
         if str(r.get("user_id")) != uid:
@@ -113,6 +119,67 @@ def get_topic_breakdown(user_id: str, limit: int = 20):
             "pct": pct
         })
 
-    # ordena por maior total respondido
     out.sort(key=lambda x: x["total"], reverse=True)
     return out[:limit]
+
+
+# ==========================================================
+# ✅ NOVO: status por QUESTÃO (para botões e priorização)
+# Regras:
+# - se acertou ao menos uma vez: True
+# - senão, se errou: False
+# - se nunca respondeu: não aparece no mapa
+# ==========================================================
+def get_question_status_map(user_id: str):
+    rows = _all_rows()
+    uid = str(user_id)
+
+    status = {}  # qid -> bool (True=acertou, False=errou)
+
+    for r in rows:
+        if str(r.get("user_id")) != uid:
+            continue
+
+        qid = str(r.get("qid") or "").strip()
+        if not qid:
+            continue
+
+        acertou = (str(r.get("acertou")) == "1")
+
+        # prioridade do status: True sempre ganha
+        if acertou:
+            status[qid] = True
+        else:
+            # só marca erro se ainda não existe status (não pode sobrescrever True)
+            if qid not in status:
+                status[qid] = False
+
+    return status
+
+
+# ==========================================================
+# ✅ NOVO: reset por usuário (para /zerar)
+# Remove todas as linhas do usuário e mantém header.
+# ==========================================================
+def reset_user_stats(user_id: str):
+    ws = _get_sheet()
+    uid = str(user_id)
+
+    # pega tudo como valores (inclui header)
+    values = ws.get_all_values()
+    if not values:
+        init_db()
+        return
+
+    header = values[0]
+    data = values[1:]
+
+    # mantém apenas linhas de outros usuários
+    kept = [row for row in data if len(row) > 0 and str(row[0]) != uid]
+
+    ws.clear()
+    ws.append_row(header)
+
+    if kept:
+        # append_rows é mais eficiente que append_row em loop
+        ws.append_rows(kept, value_input_option="RAW")

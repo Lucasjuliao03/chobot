@@ -1,7 +1,10 @@
 import re
 import pandas as pd
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from db import get_question_status_map
+
+# ✅ TROCA: agora vem do Sheets (persistente)
+from db_sheets import get_question_status_map
+
 
 # --- carga e normalização ---
 df = pd.read_excel("perguntascho2026.xlsx")
@@ -33,14 +36,17 @@ for tema in TEMAS:
             df[(df["Tema"] == tema) & (df["Subtema"] == sub)]["ID"].astype(str).str.strip().tolist()
         )
 
+
 def _extract_letter(value) -> str:
     s = str(value).strip().upper()
     m = re.search(r"\b([ABCD])\b", s)
     return m.group(1) if m else ""
 
+
 def get_question_by_id(qid: str) -> dict | None:
     qid = str(qid).strip()
     return QUESTIONS_BY_ID.get(qid)
+
 
 def get_correct_and_explanation(qid: str) -> tuple[str, str]:
     q = get_question_by_id(qid)
@@ -50,9 +56,29 @@ def get_correct_and_explanation(qid: str) -> tuple[str, str]:
     explicacao = str(q.get("Explicação", "") or "").strip()
     return correta, explicacao
 
-def _count_acertos_ao_menos_uma(user_id: str, qids: list[str]) -> int:
-    status = get_question_status_map(user_id, qids)
-    return sum(1 for st in status.values() if st.get("acertos", 0) > 0)
+
+def _subset_status_map(user_id: str, qids: list[str]) -> dict:
+    """
+    get_question_status_map(user_id) retorna status global: {qid: True/False}
+    Aqui filtramos apenas as questões do tema/subtema.
+    """
+    all_map = get_question_status_map(str(user_id))
+    qset = set(str(x).strip() for x in qids)
+    return {qid: st for qid, st in all_map.items() if str(qid).strip() in qset}
+
+
+def _count_acertos_erros(user_id: str, qids: list[str]) -> tuple[int, int]:
+    """
+    Retorna (acertos, erros) no conjunto de qids, considerando:
+      - True  => acertou ao menos uma vez
+      - False => errou e nunca acertou
+      - ausente => não respondida
+    """
+    sub = _subset_status_map(user_id, qids)
+    acertos = sum(1 for v in sub.values() if v is True)
+    erros = sum(1 for v in sub.values() if v is False)
+    return acertos, erros
+
 
 def _progress_icon(ok: int, total: int) -> str:
     """
@@ -72,6 +98,7 @@ def _progress_icon(ok: int, total: int) -> str:
         return "🟡"
     return "⚪"
 
+
 # =========================
 # UI: temas / subtemas
 # =========================
@@ -82,11 +109,12 @@ async def enviar_temas(update, context):
     for tema in TEMAS:
         qids = TEMA_TO_QIDS.get(tema, [])
         total = len(qids)
-        ok = _count_acertos_ao_menos_uma(user_id, qids)
 
-        icon = _progress_icon(ok, total)
-        # FORMATO CURTO + ÍCONE DINÂMICO
-        label = f"{tema} ({total} | {icon}{ok})"
+        acertos, erros = _count_acertos_erros(user_id, qids)
+        icon = _progress_icon(acertos, total)
+
+        # ✅ agora mostra acerto e erro reais (não zera)
+        label = f"{tema} ({total} | {icon} ✅{acertos} ❌{erros})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"TEMA|{tema}")])
 
     await update.message.reply_text(
@@ -94,6 +122,7 @@ async def enviar_temas(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
+
 
 async def enviar_subtemas(update, context, tema: str):
     user_id = str(update.effective_user.id)
@@ -104,11 +133,11 @@ async def enviar_subtemas(update, context, tema: str):
     for s in subtemas:
         qids = SUBTEMA_TO_QIDS.get((tema, s), [])
         total = len(qids)
-        ok = _count_acertos_ao_menos_uma(user_id, qids)
 
-        icon = _progress_icon(ok, total)
-        # FORMATO CURTO + ÍCONE DINÂMICO
-        label = f"{s} ({total} | {icon}{ok})"
+        acertos, erros = _count_acertos_erros(user_id, qids)
+        icon = _progress_icon(acertos, total)
+
+        label = f"{s} ({total} | {icon} ✅{acertos} ❌{erros})"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"SUB|{s}")])
 
     await update.callback_query.edit_message_text(
@@ -116,6 +145,7 @@ async def enviar_subtemas(update, context, tema: str):
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
+
 
 # =========================
 # montar fila com prioridade
@@ -133,18 +163,20 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
     base["ID"] = base["ID"].astype(str).str.strip()
     qids = base["ID"].tolist()
 
-    status = get_question_status_map(user_id, qids)
+    # ✅ status via Sheets: qid -> True/False
+    all_status = get_question_status_map(str(user_id))
 
     nao_resp, erradas, acertadas = [], [], []
     for qid in qids:
-        st = status.get(qid)
-        if not st:
+        st = all_status.get(str(qid).strip())
+        if st is None:
             nao_resp.append(qid)
-        elif st["ultima_correta"] == 0:
+        elif st is False:
             erradas.append(qid)
         else:
             acertadas.append(qid)
 
+    # embaralha dentro de cada grupo
     nao_resp = base[base["ID"].isin(nao_resp)].sample(frac=1).to_dict("records")
     erradas = base[base["ID"].isin(erradas)].sample(frac=1).to_dict("records")
     acertadas = base[base["ID"].isin(acertadas)].sample(frac=1).to_dict("records")
@@ -170,6 +202,7 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
     )
 
     await enviar_proxima(update, context)
+
 
 # =========================
 # enviar próxima
@@ -207,6 +240,3 @@ async def enviar_proxima(update, context):
         reply_markup=InlineKeyboardMarkup(teclado),
         parse_mode="Markdown"
     )
-
-
-

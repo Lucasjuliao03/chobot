@@ -2,7 +2,16 @@ import os
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
-from db_sheets import init_db, record_answer, get_overall_progress, get_topic_breakdown
+
+# ✅ IMPORTA TAMBÉM reset_user_stats (evita NameError no /zerar)
+from db_sheets import (
+    init_db,
+    record_answer,
+    get_overall_progress,
+    get_topic_breakdown,
+    reset_user_stats,  # <- necessário
+)
+
 from quiz import (
     enviar_temas,
     enviar_subtemas,
@@ -206,5 +215,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
