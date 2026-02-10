@@ -164,7 +164,11 @@ def get_topic_breakdown(user_id: str, limit: int = 20):
 def get_question_status_map(user_id: str, qids: list[str]) -> dict[str, dict]:
     """
     Retorna um mapa:
-    qid -> {tentativas, ultima_correta}
+    qid -> {tentativas, ultima_correta, acertos}
+
+    IMPORTANTE:
+    - Para contar "✅ acertada ao menos uma vez", use acertos > 0.
+    - Para priorização (erradas/ok), pode continuar usando ultima_correta.
     """
     if not qids:
         return {}
@@ -173,13 +177,18 @@ def get_question_status_map(user_id: str, qids: list[str]) -> dict[str, dict]:
     with _conn() as con:
         cur = con.cursor()
         cur.execute(f"""
-            SELECT qid, tentativas, ultima_correta
+            SELECT qid, tentativas, ultima_correta, acertos
             FROM user_question
             WHERE user_id = ? AND qid IN ({placeholders})
         """, [user_id, *qids])
         rows = cur.fetchall()
 
     out = {}
-    for qid, tent, ultima_correta in rows:
-        out[str(qid)] = {"tentativas": int(tent), "ultima_correta": int(ultima_correta)}
+    for qid, tent, ultima_correta, acertos in rows:
+        out[str(qid)] = {
+            "tentativas": int(tent),
+            "ultima_correta": int(ultima_correta),
+            "acertos": int(acertos),
+        }
     return out
+

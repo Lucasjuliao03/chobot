@@ -12,8 +12,29 @@ if "ID" not in df.columns:
     raise RuntimeError("Coluna 'ID' não encontrada no Excel.")
 df["ID"] = df["ID"].astype(str).str.strip()
 
+# normaliza Tema/Subtema como string clean (evita divergências por espaço)
+df["Tema"] = df["Tema"].astype(str).str.strip()
+df["Subtema"] = df["Subtema"].astype(str).str.strip()
+
 # cria mapa estático id -> dict(row)
 QUESTIONS_BY_ID = {str(r["ID"]): r.dropna().to_dict() for _, r in df.iterrows()}
+
+# precomputações para UI rápida
+TEMAS = sorted(df["Tema"].dropna().unique().tolist())
+TEMA_TO_QIDS = {
+    tema: df[df["Tema"] == tema]["ID"].astype(str).str.strip().tolist()
+    for tema in TEMAS
+}
+TEMA_TO_SUBTEMAS = {
+    tema: sorted(df[df["Tema"] == tema]["Subtema"].dropna().unique().tolist())
+    for tema in TEMAS
+}
+SUBTEMA_TO_QIDS = {}  # (tema, subtema) -> [qids]
+for tema in TEMAS:
+    for sub in TEMA_TO_SUBTEMAS[tema]:
+        SUBTEMA_TO_QIDS[(tema, sub)] = (
+            df[(df["Tema"] == tema) & (df["Subtema"] == sub)]["ID"].astype(str).str.strip().tolist()
+        )
 
 def _extract_letter(value) -> str:
     s = str(value).strip().upper()
@@ -32,12 +53,30 @@ def get_correct_and_explanation(qid: str) -> tuple[str, str]:
     explicacao = str(q.get("Explicação", "") or "").strip()
     return correta, explicacao
 
+def _count_acertos_ao_menos_uma(user_id: str, qids: list[str]) -> int:
+    """
+    Conta quantas questões deste conjunto o usuário já acertou ao menos 1 vez.
+    Regra: acertos > 0.
+    """
+    status = get_question_status_map(user_id, qids)
+    return sum(1 for st in status.values() if st.get("acertos", 0) > 0)
+
 # =========================
 # UI: temas / subtemas / início
 # =========================
 async def enviar_temas(update, context):
-    temas = sorted(df["Tema"].dropna().astype(str).str.strip().unique().tolist())
-    keyboard = [[InlineKeyboardButton(t, callback_data=f"TEMA|{t}")] for t in temas]
+    user_id = str(update.effective_user.id)
+
+    keyboard = []
+    for tema in TEMAS:
+        qids = TEMA_TO_QIDS.get(tema, [])
+        total = len(qids)
+        ok = _count_acertos_ao_menos_uma(user_id, qids)
+
+        # Exibição: "Tema — 90 questões (✅ 20)"
+        label = f"{tema} — {total} questões (✅ {ok})"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"TEMA|{tema}")])
+
     await update.message.reply_text(
         "📚 *Escolha o TEMA:*",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -45,8 +84,20 @@ async def enviar_temas(update, context):
     )
 
 async def enviar_subtemas(update, context, tema: str):
-    subtemas = sorted(df[df["Tema"].astype(str).str.strip() == tema]["Subtema"].dropna().astype(str).str.strip().unique().tolist())
-    keyboard = [[InlineKeyboardButton(s, callback_data=f"SUB|{s}")] for s in subtemas]
+    user_id = str(update.effective_user.id)
+
+    subtemas = TEMA_TO_SUBTEMAS.get(tema, [])
+    keyboard = []
+
+    for s in subtemas:
+        qids = SUBTEMA_TO_QIDS.get((tema, s), [])
+        total = len(qids)
+        ok = _count_acertos_ao_menos_uma(user_id, qids)
+
+        # Exibição: "Subtema — 30 questões (✅ 30)"
+        label = f"{s} — {total} questões (✅ {ok})"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"SUB|{s}")])
+
     await update.callback_query.edit_message_text(
         f"📘 *Tema:* {tema}\n\n📂 Escolha o *SUBTEMA:*",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -58,8 +109,8 @@ async def enviar_subtemas(update, context, tema: str):
 # =========================
 async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, limite: int = 20):
     base = df[
-        (df["Tema"].astype(str).str.strip() == tema) &
-        (df["Subtema"].astype(str).str.strip() == subtema)
+        (df["Tema"] == str(tema).strip()) &
+        (df["Subtema"] == str(subtema).strip())
     ].copy()
 
     if base.empty:
@@ -68,6 +119,7 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
 
     base["ID"] = base["ID"].astype(str).str.strip()
     qids = base["ID"].tolist()
+
     status = get_question_status_map(user_id, qids)
 
     nao_resp, erradas, acertadas = [], [], []
@@ -90,7 +142,7 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
     # padroniza cada item da fila: garante ID string clean
     fila_clean = []
     for item in fila:
-        item["ID"] = str(item.get("ID","")).strip()
+        item["ID"] = str(item.get("ID", "")).strip()
         fila_clean.append(item)
 
     context.chat_data["quiz"] = {
@@ -122,7 +174,6 @@ async def enviar_proxima(update, context):
 
     qid = str(q.get("ID", "")).strip()
 
-    # monta enunciado com alternativas inline (no texto)
     texto = (
         f"📘 *Tema:* {quiz['tema']}\n"
         f"📂 *Subtema:* {quiz['subtema']}\n\n"
@@ -133,7 +184,6 @@ async def enviar_proxima(update, context):
         f"D) {q.get('Opção D','')}"
     )
 
-    # CALLBACK contém apenas qid + alternativa marcada
     teclado = [[
         InlineKeyboardButton("A", callback_data=f"RESP|{qid}|A"),
         InlineKeyboardButton("B", callback_data=f"RESP|{qid}|B"),
@@ -146,3 +196,4 @@ async def enviar_proxima(update, context):
         reply_markup=InlineKeyboardMarkup(teclado),
         parse_mode="Markdown"
     )
+

@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from db import init_db, record_answer, get_overall_progress, get_topic_breakdown
 from quiz import (
@@ -8,18 +8,40 @@ from quiz import (
     enviar_subtemas,
     iniciar_quiz,
     enviar_proxima,
-    get_correct_and_explanation
+    get_correct_and_explanation,
 )
 
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram")
-PORT = int(os.getenv("PORT", 8443))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # ex: https://seuapp.onrender.com
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram")  # ex: /telegram
+PORT = int(os.getenv("PORT", "10000"))  # no Render normalmente é 10000
+
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN não definido nas variáveis de ambiente.")
+if not WEBHOOK_URL:
+    raise RuntimeError("WEBHOOK_URL não definido nas variáveis de ambiente.")
+
+# garante formato correto
+if not WEBHOOK_PATH.startswith("/"):
+    WEBHOOK_PATH = "/" + WEBHOOK_PATH
+WEBHOOK_URL = WEBHOOK_URL.rstrip("/")
+
+
+async def setup_commands(app: Application):
+    """Atualiza o menu 'Commands' do Telegram automaticamente."""
+    await app.bot.set_my_commands(
+        [
+            BotCommand("start", "Iniciar o bot e escolher tema/subtema"),
+            BotCommand("progresso", "Ver seu progresso por tema/subtema"),
+        ]
+    )
+
 
 async def start(update, context):
     await enviar_temas(update, context)
+
 
 async def progresso(update, context):
     user_id = str(update.effective_user.id)
@@ -34,7 +56,7 @@ async def progresso(update, context):
         f"❌ Erros: *{geral['erros']}*",
         f"🎯 Aproveitamento: *{geral['pct']:.1f}%*",
         "",
-        "📌 *Por Tema/Subtema (top 20 por volume):*"
+        "📌 *Por Tema/Subtema (top 20 por volume):*",
     ]
 
     breakdown = get_topic_breakdown(user_id, limit=20)
@@ -48,6 +70,7 @@ async def progresso(update, context):
             )
 
     await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
+
 
 async def callback_handler(update, context):
     query = update.callback_query
@@ -72,59 +95,65 @@ async def callback_handler(update, context):
         qid = str(qid_raw).strip()
         user_id = str(update.effective_user.id)
 
-        # pega correta e explicação pelo ID (lookup seguro)
         correta, explicacao = get_correct_and_explanation(qid)
         acertou = (marcada == correta)
 
-        # determina tema/subtema atuais da sessão (pode ser vazio)
         sess = context.chat_data.get("quiz", {})
         tema = sess.get("tema", "")
         subtema = sess.get("subtema", "")
 
-        # grava com tema/subtema
         record_answer(user_id, qid, acertou, marcada, tema, subtema)
 
-        # remove botões da mensagem original
         try:
             await query.edit_message_reply_markup(reply_markup=None)
-        except:
+        except Exception:
             pass
 
         cab = "✅ *Correto!*" if acertou else f"❌ *Errado.* Correta: *{correta or '—'}*"
         texto = f"{cab}\n\n📘 *Explicação:*\n{explicacao if explicacao else '—'}"
 
-        # botão "Próxima questão" — só quando o usuário pedir
         teclado = [[InlineKeyboardButton("➡️ Próxima questão", callback_data="NEXTQ")]]
 
         await query.message.chat.send_message(
             texto,
             reply_markup=InlineKeyboardMarkup(teclado),
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return
 
     if data == "NEXTQ":
-        # evita múltiplos cliques
         try:
             await query.edit_message_reply_markup(reply_markup=None)
-        except:
+        except Exception:
             pass
+
         await enviar_proxima(update, context)
         return
 
+
 def main():
     init_db()
-    app = Application.builder().token(TOKEN).build()
+
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(setup_commands)
+        .build()
+    )
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("progresso", progresso))
     app.add_handler(CallbackQueryHandler(callback_handler))
+
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=WEBHOOK_PATH.lstrip("/"),
         webhook_url=f"{WEBHOOK_URL}{WEBHOOK_PATH}",
-        drop_pending_updates=True
+        drop_pending_updates=True,
     )
+
 
 if __name__ == "__main__":
     main()
+
