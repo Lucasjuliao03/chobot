@@ -2,13 +2,7 @@ import os
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
-from db import (
-    init_db,
-    record_answer,
-    get_overall_progress,
-    get_topic_breakdown,
-    reset_user_stats,
-)
+from db_sheets import init_db, record_answer, get_overall_progress, get_topic_breakdown
 from quiz import (
     enviar_temas,
     enviar_subtemas,
