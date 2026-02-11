@@ -65,7 +65,6 @@ def _get_ws_sent():
     try:
         ws = sh.worksheet(title)
     except Exception:
-        # cria com tamanho inicial razoável
         ws = sh.add_worksheet(title=title, rows=2000, cols=10)
 
     _WS_SENT = ws
@@ -82,7 +81,6 @@ def init_db():
 
     expected = ["user_id", "qid", "acertou", "marcada", "tema", "subtema", "timestamp"]
 
-    # se não tiver header ou estiver diferente, zera e recria (padrão)
     if not headers or headers[:7] != expected:
         ws.clear()
         ws.append_row(expected)
@@ -114,7 +112,6 @@ def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str
 
 def _all_rows():
     ws = _get_ws_stats()
-    # retorna lista de dicts a partir do cabeçalho (linha 1)
     return ws.get_all_records()
 
 
@@ -174,11 +171,7 @@ def get_topic_breakdown(user_id: str, limit: int = 20):
 
 
 # ==========================================================
-# ✅ NOVO: status por QUESTÃO (para botões e priorização)
-# Regras:
-# - se acertou ao menos uma vez: True
-# - senão, se errou: False
-# - se nunca respondeu: não aparece no mapa
+# ✅ status por QUESTÃO (para botões e priorização)
 # ==========================================================
 def get_question_status_map(user_id: str):
     rows = _all_rows()
@@ -196,11 +189,9 @@ def get_question_status_map(user_id: str):
 
         acertou = (str(r.get("acertou")) == "1")
 
-        # prioridade do status: True sempre ganha
         if acertou:
             status[qid] = True
         else:
-            # só marca erro se ainda não existe status (não pode sobrescrever True)
             if qid not in status:
                 status[qid] = False
 
@@ -208,14 +199,12 @@ def get_question_status_map(user_id: str):
 
 
 # ==========================================================
-# ✅ NOVO: reset por usuário (para /zerar)
-# Remove todas as linhas do usuário e mantém header.
+# ✅ reset por usuário (para /zerar)
 # ==========================================================
 def reset_user_stats(user_id: str):
     ws = _get_ws_stats()
     uid = str(user_id)
 
-    # pega tudo como valores (inclui header)
     values = ws.get_all_values()
     if not values:
         init_db()
@@ -224,7 +213,6 @@ def reset_user_stats(user_id: str):
     header = values[0]
     data = values[1:]
 
-    # mantém apenas linhas de outros usuários
     kept = [row for row in data if len(row) > 0 and str(row[0]) != uid]
 
     ws.clear()
@@ -235,9 +223,7 @@ def reset_user_stats(user_id: str):
 
 
 # ==========================================================
-# 🔥 NOVO: persistência de embaralhamento por envio (restart-proof)
-# Worksheet: "sent"
-# cols: user_id, qid, message_id, correta_exibida, perm, timestamp
+# 🔥 persistência de embaralhamento por envio (restart-proof)
 # ==========================================================
 def record_sent_question(user_id: str, qid: str, message_id: int, correta_exibida: str, perm: str):
     ws = _get_ws_sent()
@@ -258,16 +244,11 @@ def _sent_all_records():
 
 
 def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
-    """
-    Retorna a correta_exibida persistida para (user_id, qid, message_id).
-    Se não achar, retorna "".
-    """
     uid = str(user_id)
     q = str(qid).strip()
     mid = str(message_id)
 
     rows = _sent_all_records()
-    # varre do fim (mais recente) para o começo para ser mais eficiente em dados grandes
     for r in reversed(rows):
         if str(r.get("user_id")) == uid and str(r.get("qid")).strip() == q and str(r.get("message_id")) == mid:
             return str(r.get("correta_exibida") or "").strip().upper()
@@ -276,11 +257,6 @@ def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
 
 
 def get_last_perm_for_user_question(user_id: str, qid: str) -> str:
-    """
-    Evita repetir o mesmo embaralhamento:
-    retorna a última perm registrada para (user_id, qid), independente do message_id.
-    Se não achar, retorna "".
-    """
     uid = str(user_id)
     q = str(qid).strip()
 
@@ -290,3 +266,111 @@ def get_last_perm_for_user_question(user_id: str, qid: str) -> str:
             return str(r.get("perm") or "").strip()
 
     return ""
+
+
+# ==========================================================
+# 🔥 NOVO: agregações para /score (todos usuários)
+# ==========================================================
+def get_users_overall_scores(limit: int | None = None):
+    """
+    Retorna lista:
+      [{"user_id": "...", "respondidas": N, "acertos": A, "erros": E, "pct": P}, ...]
+    Ordenado por respondidas desc.
+    """
+    rows = _all_rows()
+
+    agg = {}  # user_id -> {acertos, erros}
+    for r in rows:
+        uid = str(r.get("user_id") or "").strip()
+        if not uid:
+            continue
+
+        if uid not in agg:
+            agg[uid] = {"user_id": uid, "acertos": 0, "erros": 0}
+
+        if str(r.get("acertou")) == "1":
+            agg[uid]["acertos"] += 1
+        else:
+            agg[uid]["erros"] += 1
+
+    out = []
+    for v in agg.values():
+        total = v["acertos"] + v["erros"]
+        pct = (v["acertos"] / total * 100.0) if total else 0.0
+        out.append({
+            "user_id": v["user_id"],
+            "respondidas": total,
+            "acertos": v["acertos"],
+            "erros": v["erros"],
+            "pct": pct
+        })
+
+    out.sort(key=lambda x: x["respondidas"], reverse=True)
+
+    if limit is not None:
+        return out[:max(0, int(limit))]
+    return out
+
+
+def get_user_topic_breakdown_full(user_id: str):
+    """
+    Retorna duas visões:
+      - por tema (agregado)
+      - por tema/subtema (detalhado)
+    """
+    rows = _all_rows()
+    uid = str(user_id).strip()
+
+    # por tema
+    tema_agg = {}  # tema -> {acertos, erros}
+    # por tema/subtema
+    ts_agg = {}    # (tema, subtema) -> {acertos, erros}
+
+    for r in rows:
+        if str(r.get("user_id") or "").strip() != uid:
+            continue
+
+        tema = str(r.get("tema") or "").strip()
+        sub = str(r.get("subtema") or "").strip()
+
+        if tema not in tema_agg:
+            tema_agg[tema] = {"tema": tema, "acertos": 0, "erros": 0}
+        key = (tema, sub)
+        if key not in ts_agg:
+            ts_agg[key] = {"tema": tema, "subtema": sub, "acertos": 0, "erros": 0}
+
+        if str(r.get("acertou")) == "1":
+            tema_agg[tema]["acertos"] += 1
+            ts_agg[key]["acertos"] += 1
+        else:
+            tema_agg[tema]["erros"] += 1
+            ts_agg[key]["erros"] += 1
+
+    temas = []
+    for v in tema_agg.values():
+        total = v["acertos"] + v["erros"]
+        pct = (v["acertos"] / total * 100.0) if total else 0.0
+        temas.append({
+            "tema": v["tema"],
+            "acertos": v["acertos"],
+            "erros": v["erros"],
+            "total": total,
+            "pct": pct
+        })
+    temas.sort(key=lambda x: x["total"], reverse=True)
+
+    tema_sub = []
+    for v in ts_agg.values():
+        total = v["acertos"] + v["erros"]
+        pct = (v["acertos"] / total * 100.0) if total else 0.0
+        tema_sub.append({
+            "tema": v["tema"],
+            "subtema": v["subtema"],
+            "acertos": v["acertos"],
+            "erros": v["erros"],
+            "total": total,
+            "pct": pct
+        })
+    tema_sub.sort(key=lambda x: x["total"], reverse=True)
+
+    return {"temas": temas, "tema_subtema": tema_sub}
