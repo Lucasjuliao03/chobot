@@ -1,9 +1,10 @@
 import re
+import random
 import pandas as pd
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 # ✅ TROCA: agora vem do Sheets (persistente)
-from db_sheets import get_question_status_map
+from db_sheets import get_question_status_map, get_last_perm_for_user_question, record_sent_question
 
 
 # --- carga e normalização ---
@@ -95,6 +96,61 @@ def _progress_icon(ok: int, total: int) -> str:
     if ratio > 0.5:
         return "🟡"
     return "⚪"
+
+
+# ==========================================================
+# 🔥 NOVO: embaralhamento não repetido por usuário/questão
+# - Perm é uma lista de letras originais na ordem exibida
+#   ex: "C,D,A,B" significa:
+#     exibida A=orig C, B=orig D, C=orig A, D=orig B
+# ==========================================================
+LETRAS = ["A", "B", "C", "D"]
+
+def _make_perm_no_repeat(user_id: str, qid: str) -> list[str]:
+    """
+    Gera perm (ordem de letras originais) evitando repetir a última perm desse user/qid.
+    """
+    last_perm = get_last_perm_for_user_question(str(user_id), str(qid).strip())
+    last = [p.strip().upper() for p in last_perm.split(",")] if last_perm else []
+
+    base = LETRAS[:]  # ["A","B","C","D"]
+
+    for _ in range(12):  # tentativas suficientes
+        cand = base[:]
+        random.shuffle(cand)
+        if cand != last:
+            return cand
+
+    # fallback: se por alguma razão não mudar (quase impossível), retorna mesmo assim
+    cand = base[:]
+    random.shuffle(cand)
+    return cand
+
+
+def _apply_perm(q: dict, perm: list[str], correta_original: str):
+    """
+    perm: lista de letras ORIGINAIS na ordem exibida A,B,C,D
+    retorna:
+      alternativas_exibidas: dict {"A":texto, ...}
+      correta_exibida: "A"/"B"/"C"/"D"
+    """
+    orig_to_text = {
+        "A": q.get("Opção A", ""),
+        "B": q.get("Opção B", ""),
+        "C": q.get("Opção C", ""),
+        "D": q.get("Opção D", ""),
+    }
+
+    exibidas = {}
+    correta_exibida = ""
+
+    for i, letra_exibida in enumerate(LETRAS):
+        letra_orig = perm[i]  # ex: "C"
+        exibidas[letra_exibida] = orig_to_text.get(letra_orig, "")
+        if letra_orig == correta_original:
+            correta_exibida = letra_exibida
+
+    return exibidas, correta_exibida
 
 
 # =========================
@@ -216,15 +272,28 @@ async def enviar_proxima(update, context):
     quiz["index"] += 1
 
     qid = str(q.get("ID", "")).strip()
+    user_id = str(quiz.get("user_id") or "")
+
+    # correta original do Excel
+    correta_original, _exp = get_correct_and_explanation(qid)
+
+    # 🔥 perm sem repetir para esse usuário/questão
+    perm = _make_perm_no_repeat(user_id, qid)  # lista ["C","D","A","B"]
+    alternativas_exibidas, correta_exibida = _apply_perm(q, perm, correta_original)
+
+    # guarda em sessão também (fallback)
+    context.chat_data["correta_exibida"] = correta_exibida
+    context.chat_data["qid_atual"] = qid
+    context.chat_data["perm_atual"] = ",".join(perm)
 
     texto = (
         f"📘 *Tema:* {quiz['tema']}\n"
         f"📂 *Subtema:* {quiz['subtema']}\n\n"
         f"*{q.get('Pergunta','')}*\n\n"
-        f"A) {q.get('Opção A','')}\n"
-        f"B) {q.get('Opção B','')}\n"
-        f"C) {q.get('Opção C','')}\n"
-        f"D) {q.get('Opção D','')}"
+        f"A) {alternativas_exibidas.get('A','')}\n"
+        f"B) {alternativas_exibidas.get('B','')}\n"
+        f"C) {alternativas_exibidas.get('C','')}\n"
+        f"D) {alternativas_exibidas.get('D','')}"
     )
 
     teclado = [[
@@ -234,9 +303,24 @@ async def enviar_proxima(update, context):
         InlineKeyboardButton("D", callback_data=f"RESP|{qid}|D"),
     ]]
 
-    await update.effective_chat.send_message(
+    # ⚠️ CAPTURA message_id PARA PERSISTÊNCIA (restart-proof)
+    msg = await update.effective_chat.send_message(
         texto,
         reply_markup=InlineKeyboardMarkup(teclado),
         parse_mode="Markdown"
     )
+
+    # grava envio (user_id + qid + message_id) => correta_exibida + perm
+    try:
+        record_sent_question(
+            user_id=user_id,
+            qid=qid,
+            message_id=msg.message_id,
+            correta_exibida=correta_exibida,
+            perm=",".join(perm)
+        )
+    except Exception:
+        # se falhar, ainda funciona via session (não quebra o fluxo)
+        pass
+
 

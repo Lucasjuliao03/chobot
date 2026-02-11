@@ -7,13 +7,23 @@ from google.oauth2.service_account import Credentials
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-_SHEET = None
+# caches
+_SH = None
+_WS_STATS = None
+_WS_SENT = None
 
 
 def _get_sheet():
-    global _SHEET
-    if _SHEET is not None:
-        return _SHEET
+    """
+    MANTIDO por compatibilidade: retorna a worksheet principal (sheet1).
+    """
+    return _get_ws_stats()
+
+
+def _get_sh():
+    global _SH
+    if _SH is not None:
+        return _SH
 
     sheet_id = os.getenv("GOOGLE_SHEET_ID")
     creds_json = os.getenv("GOOGLE_CREDS_JSON")
@@ -27,16 +37,47 @@ def _get_sheet():
     creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     gc = gspread.authorize(creds)
 
-    sh = gc.open_by_key(sheet_id)
-    _SHEET = sh.sheet1
-    return _SHEET
+    _SH = gc.open_by_key(sheet_id)
+    return _SH
+
+
+def _get_ws_stats():
+    global _WS_STATS
+    if _WS_STATS is not None:
+        return _WS_STATS
+
+    sh = _get_sh()
+    _WS_STATS = sh.sheet1
+    return _WS_STATS
+
+
+def _get_ws_sent():
+    """
+    Worksheet para persistir embaralhamento por envio (à prova de restart).
+    """
+    global _WS_SENT
+    if _WS_SENT is not None:
+        return _WS_SENT
+
+    sh = _get_sh()
+    title = "sent"
+
+    try:
+        ws = sh.worksheet(title)
+    except Exception:
+        # cria com tamanho inicial razoável
+        ws = sh.add_worksheet(title=title, rows=2000, cols=10)
+
+    _WS_SENT = ws
+    return _WS_SENT
 
 
 def init_db():
     """
-    Garante cabeçalho na planilha.
+    Garante cabeçalho na planilha (stats) E na planilha (sent).
     """
-    ws = _get_sheet()
+    # === stats (sheet1) ===
+    ws = _get_ws_stats()
     headers = ws.row_values(1)
 
     expected = ["user_id", "qid", "acertou", "marcada", "tema", "subtema", "timestamp"]
@@ -46,9 +87,18 @@ def init_db():
         ws.clear()
         ws.append_row(expected)
 
+    # === sent (worksheet separada) ===
+    ws2 = _get_ws_sent()
+    headers2 = ws2.row_values(1)
+    expected2 = ["user_id", "qid", "message_id", "correta_exibida", "perm", "timestamp"]
+
+    if not headers2 or headers2[:6] != expected2:
+        ws2.clear()
+        ws2.append_row(expected2)
+
 
 def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str, subtema: str):
-    ws = _get_sheet()
+    ws = _get_ws_stats()
     ts = datetime.now(timezone.utc).isoformat()
 
     ws.append_row([
@@ -63,7 +113,7 @@ def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str
 
 
 def _all_rows():
-    ws = _get_sheet()
+    ws = _get_ws_stats()
     # retorna lista de dicts a partir do cabeçalho (linha 1)
     return ws.get_all_records()
 
@@ -162,7 +212,7 @@ def get_question_status_map(user_id: str):
 # Remove todas as linhas do usuário e mantém header.
 # ==========================================================
 def reset_user_stats(user_id: str):
-    ws = _get_sheet()
+    ws = _get_ws_stats()
     uid = str(user_id)
 
     # pega tudo como valores (inclui header)
@@ -181,5 +231,62 @@ def reset_user_stats(user_id: str):
     ws.append_row(header)
 
     if kept:
-        # append_rows é mais eficiente que append_row em loop
         ws.append_rows(kept, value_input_option="RAW")
+
+
+# ==========================================================
+# 🔥 NOVO: persistência de embaralhamento por envio (restart-proof)
+# Worksheet: "sent"
+# cols: user_id, qid, message_id, correta_exibida, perm, timestamp
+# ==========================================================
+def record_sent_question(user_id: str, qid: str, message_id: int, correta_exibida: str, perm: str):
+    ws = _get_ws_sent()
+    ts = datetime.now(timezone.utc).isoformat()
+    ws.append_row([
+        str(user_id),
+        str(qid),
+        str(message_id),
+        str(correta_exibida or ""),
+        str(perm or ""),
+        ts
+    ])
+
+
+def _sent_all_records():
+    ws = _get_ws_sent()
+    return ws.get_all_records()
+
+
+def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
+    """
+    Retorna a correta_exibida persistida para (user_id, qid, message_id).
+    Se não achar, retorna "".
+    """
+    uid = str(user_id)
+    q = str(qid).strip()
+    mid = str(message_id)
+
+    rows = _sent_all_records()
+    # varre do fim (mais recente) para o começo para ser mais eficiente em dados grandes
+    for r in reversed(rows):
+        if str(r.get("user_id")) == uid and str(r.get("qid")).strip() == q and str(r.get("message_id")) == mid:
+            return str(r.get("correta_exibida") or "").strip().upper()
+
+    return ""
+
+
+def get_last_perm_for_user_question(user_id: str, qid: str) -> str:
+    """
+    Evita repetir o mesmo embaralhamento:
+    retorna a última perm registrada para (user_id, qid), independente do message_id.
+    Se não achar, retorna "".
+    """
+    uid = str(user_id)
+    q = str(qid).strip()
+
+    rows = _sent_all_records()
+    for r in reversed(rows):
+        if str(r.get("user_id")) == uid and str(r.get("qid")).strip() == q:
+            return str(r.get("perm") or "").strip()
+
+    return ""

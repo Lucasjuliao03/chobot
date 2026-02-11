@@ -10,6 +10,7 @@ from db_sheets import (
     get_overall_progress,
     get_topic_breakdown,
     reset_user_stats,  # <- necessário
+    get_sent_correct,  # 🔥 novo: validação restart-proof
 )
 
 from quiz import (
@@ -128,6 +129,9 @@ async def callback_handler(update, context):
             # limpa sessão atual, se existir
             context.chat_data.pop("quiz", None)
             context.chat_data.pop("tema", None)
+            context.chat_data.pop("correta_exibida", None)
+            context.chat_data.pop("qid_atual", None)
+            context.chat_data.pop("perm_atual", None)
 
             try:
                 await query.edit_message_reply_markup(reply_markup=None)
@@ -154,8 +158,26 @@ async def callback_handler(update, context):
         _, qid_raw, marcada = data.split("|", 2)
         qid = str(qid_raw).strip()
 
-        correta, explicacao = get_correct_and_explanation(qid)
-        acertou = (marcada == correta)
+        # 🔥 correta exibida (restart-proof) pelo message_id da questão (query.message)
+        message_id = getattr(query.message, "message_id", None)
+        correta_exibida = ""
+        if message_id is not None:
+            try:
+                correta_exibida = get_sent_correct(user_id, qid, message_id)
+            except Exception:
+                correta_exibida = ""
+
+        # fallback: sessão (se por algum motivo a persistência falhar)
+        if not correta_exibida:
+            correta_exibida = str(context.chat_data.get("correta_exibida", "")).strip().upper()
+
+        correta_original, explicacao = get_correct_and_explanation(qid)
+
+        # se ainda assim não tiver correta_exibida, cai no comportamento antigo (não trava)
+        if correta_exibida:
+            acertou = (marcada == correta_exibida)
+        else:
+            acertou = (marcada == correta_original)
 
         sess = context.chat_data.get("quiz", {})
         tema = sess.get("tema", "")
@@ -168,7 +190,7 @@ async def callback_handler(update, context):
         except Exception:
             pass
 
-        cab = "✅ *Correto!*" if acertou else f"❌ *Errado.* Correta: *{correta or '—'}*"
+        cab = "✅ *Correto!*" if acertou else f"❌ *Errado.* Correta: *{correta_exibida or correta_original or '—'}*"
         texto = f"{cab}\n\n📘 *Explicação:*\n{explicacao if explicacao else '—'}"
 
         teclado = [[InlineKeyboardButton("➡️ Próxima questão", callback_data="NEXTQ")]]
@@ -215,3 +237,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
