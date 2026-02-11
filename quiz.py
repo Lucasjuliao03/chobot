@@ -3,8 +3,8 @@ import random
 import pandas as pd
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-# ✅ TROCA: agora vem do Sheets (persistente)
-from db_sheets import get_question_status_map, get_last_perm_for_user_question, record_sent_question
+# ✅ TROCA: agora vem do Turso (persistente)
+from db_turso import get_question_status_map, get_last_perm_for_user_question, record_sent_question
 
 
 # --- carga e normalização ---
@@ -99,10 +99,7 @@ def _progress_icon(ok: int, total: int) -> str:
 
 
 # ==========================================================
-# 🔥 NOVO: embaralhamento não repetido por usuário/questão
-# - Perm é uma lista de letras originais na ordem exibida
-#   ex: "C,D,A,B" significa:
-#     exibida A=orig C, B=orig D, C=orig A, D=orig B
+# 🔥 embaralhamento não repetido por usuário/questão
 # ==========================================================
 LETRAS = ["A", "B", "C", "D"]
 
@@ -115,13 +112,12 @@ def _make_perm_no_repeat(user_id: str, qid: str) -> list[str]:
 
     base = LETRAS[:]  # ["A","B","C","D"]
 
-    for _ in range(12):  # tentativas suficientes
+    for _ in range(12):
         cand = base[:]
         random.shuffle(cand)
         if cand != last:
             return cand
 
-    # fallback: se por alguma razão não mudar (quase impossível), retorna mesmo assim
     cand = base[:]
     random.shuffle(cand)
     return cand
@@ -145,7 +141,7 @@ def _apply_perm(q: dict, perm: list[str], correta_original: str):
     correta_exibida = ""
 
     for i, letra_exibida in enumerate(LETRAS):
-        letra_orig = perm[i]  # ex: "C"
+        letra_orig = perm[i]
         exibidas[letra_exibida] = orig_to_text.get(letra_orig, "")
         if letra_orig == correta_original:
             correta_exibida = letra_exibida
@@ -167,9 +163,7 @@ async def enviar_temas(update, context):
         acertos, _erros = _count_acertos_erros(user_id, qids)
         icon = _progress_icon(acertos, total)
 
-        # texto: tema à esquerda, contador no final
         label = f"{tema}  |  {icon} {acertos}/{total}"
-
         keyboard.append([InlineKeyboardButton(label, callback_data=f"TEMA|{tema}")])
 
     await update.message.reply_text(
@@ -218,7 +212,6 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
     base["ID"] = base["ID"].astype(str).str.strip()
     qids = base["ID"].tolist()
 
-    # ✅ status via Sheets: qid -> True/False
     all_status = get_question_status_map(str(user_id))
 
     nao_resp, erradas, acertadas = [], [], []
@@ -231,7 +224,6 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
         else:
             acertadas.append(qid)
 
-    # embaralha dentro de cada grupo
     nao_resp = base[base["ID"].isin(nao_resp)].sample(frac=1).to_dict("records")
     erradas = base[base["ID"].isin(erradas)].sample(frac=1).to_dict("records")
     acertadas = base[base["ID"].isin(acertadas)].sample(frac=1).to_dict("records")
@@ -274,14 +266,11 @@ async def enviar_proxima(update, context):
     qid = str(q.get("ID", "")).strip()
     user_id = str(quiz.get("user_id") or "")
 
-    # correta original do Excel
     correta_original, _exp = get_correct_and_explanation(qid)
 
-    # 🔥 perm sem repetir para esse usuário/questão
-    perm = _make_perm_no_repeat(user_id, qid)  # lista ["C","D","A","B"]
+    perm = _make_perm_no_repeat(user_id, qid)
     alternativas_exibidas, correta_exibida = _apply_perm(q, perm, correta_original)
 
-    # guarda em sessão também (fallback)
     context.chat_data["correta_exibida"] = correta_exibida
     context.chat_data["qid_atual"] = qid
     context.chat_data["perm_atual"] = ",".join(perm)
@@ -303,14 +292,12 @@ async def enviar_proxima(update, context):
         InlineKeyboardButton("D", callback_data=f"RESP|{qid}|D"),
     ]]
 
-    # ⚠️ CAPTURA message_id PARA PERSISTÊNCIA (restart-proof)
     msg = await update.effective_chat.send_message(
         texto,
         reply_markup=InlineKeyboardMarkup(teclado),
         parse_mode="Markdown"
     )
 
-    # grava envio (user_id + qid + message_id) => correta_exibida + perm
     try:
         record_sent_question(
             user_id=user_id,
@@ -320,7 +307,7 @@ async def enviar_proxima(update, context):
             perm=",".join(perm)
         )
     except Exception:
-        # se falhar, ainda funciona via session (não quebra o fluxo)
         pass
+
 
 

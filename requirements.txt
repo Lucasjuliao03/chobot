@@ -2,6 +2,5 @@ python-telegram-bot[webhooks]==20.8
 pandas
 openpyxl
 python-dotenv
-gspread==6.1.2
-google-auth==2.33.0
+libsql
 

@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
-from db_sheets import (
+from db_turso import (
     init_db,
     record_answer,
     get_overall_progress,
@@ -151,7 +151,6 @@ async def score(update, context):
         await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
         return
 
-    # exibição enxuta (evita texto gigante)
     for i, s in enumerate(scores, start=1):
         linhas.append(
             f"{i:02d}. `{s['user_id']}` → *{s['respondidas']}* "
@@ -164,7 +163,7 @@ async def score(update, context):
 async def zerar(update, context):
     user_id = str(update.effective_user.id)
 
-    teclado = InlineKeyboardMarkup([[
+    teclado = InlineKeyboardMarkup([[  # noqa
         InlineKeyboardButton("✅ Confirmar zerar", callback_data=f"RST|YES|{user_id}"),
         InlineKeyboardButton("❌ Cancelar", callback_data=f"RST|NO|{user_id}"),
     ]])
@@ -294,7 +293,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("progresso", progresso))
-    app.add_handler(CommandHandler("score", score))  # 🔥 novo
+    app.add_handler(CommandHandler("score", score))
     app.add_handler(CommandHandler("zerar", zerar))
     app.add_handler(CallbackQueryHandler(callback_handler))
 
