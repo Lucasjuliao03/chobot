@@ -1,8 +1,7 @@
 import os
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
-from aiohttp import web
 
 from db_turso import (
     init_db,
@@ -282,54 +281,31 @@ async def callback_handler(update, context):
         return
 
 
-
-
 def main():
     init_db()
 
-    application = (
+    app = (
         Application.builder()
         .token(TOKEN)
         .post_init(setup_commands)
         .build()
     )
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("progresso", progresso))
-    application.add_handler(CommandHandler("score", score))
-    application.add_handler(CommandHandler("zerar", zerar))
-    application.add_handler(CallbackQueryHandler(callback_handler))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("progresso", progresso))
+    app.add_handler(CommandHandler("score", score))
+    app.add_handler(CommandHandler("zerar", zerar))
+    app.add_handler(CallbackQueryHandler(callback_handler))
 
-    async def health(request):
-        return web.Response(text="OK", status=200)
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=WEBHOOK_PATH.lstrip("/"),
+        webhook_url=f"{WEBHOOK_URL}{WEBHOOK_PATH}",
+        drop_pending_updates=True,
+    )
 
-    async def root(request):
-        return web.Response(text="OK", status=200)
 
-    async def telegram_webhook(request):
-        data = await request.json()
-        update = Update.de_json(data, application.bot)
-        await application.process_update(update)
-        return web.Response(text="OK", status=200)
+if __name__ == "__main__":
+    main()
 
-    async def on_startup(app):
-        await application.initialize()
-        await application.start()
-        await application.bot.set_webhook(
-            url=f"{WEBHOOK_URL}{WEBHOOK_PATH}",
-            drop_pending_updates=True
-        )
-
-    async def on_shutdown(app):
-        await application.stop()
-        await application.shutdown()
-
-    app = web.Application()
-    app.router.add_get("/", root)
-    app.router.add_get("/health", health)
-    app.router.add_post(WEBHOOK_PATH, telegram_webhook)
-
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-
-    web.run_app(app, host="0.0.0.0", port=PORT)
