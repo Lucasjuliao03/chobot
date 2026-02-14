@@ -1,7 +1,8 @@
 import os
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from aiohttp import web
 
 from db_turso import (
     init_db,
@@ -281,9 +282,7 @@ async def callback_handler(update, context):
         return
 
 
-from aiohttp import web
-from telegram import Update
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+
 
 def main():
     init_db()
