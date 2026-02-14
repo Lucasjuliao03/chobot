@@ -1,4 +1,3 @@
-# db_turso.py
 import os
 from datetime import datetime, timezone
 
@@ -21,35 +20,6 @@ _CONN = libsql.connect(database=TURSO_URL, auth_token=TURSO_AUTH_TOKEN)
 
 def _utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
-
-
-def normalize_qid(raw) -> str:
-    """Normaliza ID de questão para evitar '1.0' vs '1'."""
-    if raw is None:
-        return ""
-    try:
-        # NaN
-        if isinstance(raw, float) and raw != raw:
-            return ""
-    except Exception:
-        pass
-
-    if isinstance(raw, int):
-        return str(raw)
-    if isinstance(raw, float):
-        return str(int(raw)) if raw.is_integer() else str(raw).strip()
-
-    s = str(raw).strip()
-    if not s or s.lower() in ("nan", "none"):
-        return ""
-    try:
-        if "." in s:
-            f = float(s)
-            if f.is_integer():
-                return str(int(f))
-    except Exception:
-        pass
-    return s
 
 
 def _fetchall(sql: str, params: tuple = ()):
@@ -79,8 +49,7 @@ def init_db():
       - respostas  (equivale à sheet1 stats)
       - sent       (equivale à worksheet 'sent')
     """
-    _exec(
-        """
+    _exec("""
     CREATE TABLE IF NOT EXISTS respostas (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
@@ -91,16 +60,14 @@ def init_db():
         subtema TEXT,
         timestamp TEXT
     )
-    """
-    )
+    """)
 
     _exec("CREATE INDEX IF NOT EXISTS idx_respostas_user ON respostas(user_id)")
     _exec("CREATE INDEX IF NOT EXISTS idx_respostas_user_qid ON respostas(user_id, qid)")
     _exec("CREATE INDEX IF NOT EXISTS idx_respostas_tema_sub ON respostas(tema, subtema)")
     _exec("CREATE INDEX IF NOT EXISTS idx_respostas_qid ON respostas(qid)")
 
-    _exec(
-        """
+    _exec("""
     CREATE TABLE IF NOT EXISTS sent (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT NOT NULL,
@@ -110,8 +77,7 @@ def init_db():
         perm TEXT,
         timestamp TEXT
     )
-    """
-    )
+    """)
 
     _exec("CREATE INDEX IF NOT EXISTS idx_sent_user_qid_mid ON sent(user_id, qid, message_id)")
     _exec("CREATE INDEX IF NOT EXISTS idx_sent_user_qid ON sent(user_id, qid)")
@@ -124,7 +90,7 @@ def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str
         INSERT INTO respostas (user_id, qid, acertou, marcada, tema, subtema, timestamp)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (str(user_id), normalize_qid(qid), 1 if acertou else 0, str(marcada), str(tema or ""), str(subtema or ""), ts),
+        (str(user_id), str(qid).strip(), 1 if acertou else 0, str(marcada), str(tema or ""), str(subtema or ""), ts),
     )
 
 
@@ -211,7 +177,7 @@ def get_question_status_map(user_id: str):
 
     status = {}
     for qid, ok in rows:
-        q = normalize_qid(qid)
+        q = str(qid).strip()
         if not q:
             continue
         status[q] = True if int(ok or 0) == 1 else False
@@ -233,7 +199,7 @@ def record_sent_question(user_id: str, qid: str, message_id: int, correta_exibid
         """,
         (
             str(user_id),
-            normalize_qid(qid),
+            str(qid).strip(),
             int(message_id),
             str(correta_exibida or "").strip().upper(),
             str(perm or "").strip(),
@@ -244,7 +210,7 @@ def record_sent_question(user_id: str, qid: str, message_id: int, correta_exibid
 
 def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
     uid = str(user_id)
-    q = normalize_qid(qid)
+    q = str(qid).strip()
     mid = int(message_id)
 
     row = _fetchone(
@@ -264,7 +230,7 @@ def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
 
 def get_last_perm_for_user_question(user_id: str, qid: str) -> str:
     uid = str(user_id)
-    q = normalize_qid(qid)
+    q = str(qid).strip()
 
     row = _fetchone(
         """
@@ -358,7 +324,17 @@ def get_user_topic_breakdown_full(user_id: str):
         (uid,),
     )
 
-    rows_det = _fetchall(
+    temas = []
+    for tema, acertos, erros, total in rows_tema:
+        acertos = int(acertos or 0)
+        erros = int(erros or 0)
+        total = int(total or 0)
+        pct = (acertos / total * 100.0) if total else 0.0
+        temas.append(
+            {"tema": str(tema or ""), "acertos": acertos, "erros": erros, "total": total, "pct": pct}
+        )
+
+    rows_ts = _fetchall(
         """
         SELECT
             COALESCE(tema, '') AS tema,
@@ -374,21 +350,13 @@ def get_user_topic_breakdown_full(user_id: str):
         (uid,),
     )
 
-    tema_out = []
-    for tema, acertos, erros, total in rows_tema:
+    tema_subtema = []
+    for tema, subtema, acertos, erros, total in rows_ts:
         acertos = int(acertos or 0)
         erros = int(erros or 0)
         total = int(total or 0)
         pct = (acertos / total * 100.0) if total else 0.0
-        tema_out.append({"tema": str(tema or ""), "acertos": acertos, "erros": erros, "total": total, "pct": pct})
-
-    det_out = []
-    for tema, subtema, acertos, erros, total in rows_det:
-        acertos = int(acertos or 0)
-        erros = int(erros or 0)
-        total = int(total or 0)
-        pct = (acertos / total * 100.0) if total else 0.0
-        det_out.append(
+        tema_subtema.append(
             {
                 "tema": str(tema or ""),
                 "subtema": str(subtema or ""),
@@ -399,4 +367,4 @@ def get_user_topic_breakdown_full(user_id: str):
             }
         )
 
-    return {"por_tema": tema_out, "por_tema_subtema": det_out}
+    return {"temas": temas, "tema_subtema": tema_subtema}

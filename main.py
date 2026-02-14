@@ -1,4 +1,3 @@
-# main.py
 import os
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
@@ -11,7 +10,6 @@ from db_turso import (
     get_topic_breakdown,
     reset_user_stats,
     get_sent_correct,
-    normalize_qid,
     # 🔥 novos para /score
     get_users_overall_scores,
     get_user_topic_breakdown_full,
@@ -97,75 +95,98 @@ async def score(update, context):
     # detalhe: /score <user_id>
     if args:
         uid = str(args[0]).strip()
-        data = get_user_topic_breakdown_full(uid)
+        geral = get_overall_progress(uid)
+        total = geral["acertos"] + geral["erros"]
 
-        linhas = [f"🏁 *Score detalhado* — user_id: `{uid}`", ""]
-        linhas.append("📌 *Por Tema:*")
-        por_tema = data.get("por_tema") or []
-        if not por_tema:
+        blob = get_user_topic_breakdown_full(uid)
+        temas = blob["temas"]
+        tema_sub = blob["tema_subtema"]
+
+        linhas = [
+            f"👤 *SCORE do usuário:* `{uid}`",
+            "",
+            f"Respondidas: *{total}*",
+            f"✅ Acertos: *{geral['acertos']}*",
+            f"❌ Erros: *{geral['erros']}*",
+            f"🎯 Aproveitamento: *{geral['pct']:.1f}%*",
+            "",
+            "📌 *Por TEMA (top 15 por volume):*",
+        ]
+
+        if not temas:
             linhas.append("—")
         else:
-            for r in por_tema[:30]:
-                linhas.append(f"• *{r['tema']}* → {r['total']} (✅{r['acertos']} ❌{r['erros']}) | *{r['pct']:.1f}%*")
+            for t in temas[:15]:
+                linhas.append(
+                    f"• *{t['tema'] or '—'}* → {t['total']} (✅{t['acertos']} ❌{t['erros']}) | *{t['pct']:.1f}%*"
+                )
 
         linhas.append("")
-        linhas.append("📌 *Por Tema/Subtema:*")
-        det = data.get("por_tema_subtema") or []
-        if not det:
+        linhas.append("📌 *Por TEMA / SUBTEMA (top 30 por volume):*")
+
+        if not tema_sub:
             linhas.append("—")
         else:
-            for r in det[:50]:
+            for r in tema_sub[:30]:
                 linhas.append(
-                    f"• *{r['tema']}* / _{r['subtema']}_ → {r['total']} (✅{r['acertos']} ❌{r['erros']}) | *{r['pct']:.1f}%*"
+                    f"• *{r['tema'] or '—'}* / _{r['subtema'] or '—'}_ → "
+                    f"{r['total']} (✅{r['acertos']} ❌{r['erros']}) | *{r['pct']:.1f}%*"
                 )
 
         await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
         return
 
-    # lista usuários
-    top = get_users_overall_scores(limit=20)
-    linhas = ["🏆 *Ranking (Top 20 por respondidas)*", ""]
-    if not top:
-        linhas.append("—")
-    else:
-        for i, r in enumerate(top, 1):
-            linhas.append(
-                f"{i:02d}) `{r['user_id']}` → {r['respondidas']} (✅{r['acertos']} ❌{r['erros']}) | *{r['pct']:.1f}%*"
-            )
+    # lista geral: /score
+    scores = get_users_overall_scores(limit=20)
 
-    linhas.append("")
-    linhas.append("Para detalhar: `/score <user_id>`")
+    linhas = [
+        "🏆 *SCORE (Top 20 por respondidas)*",
+        "",
+        "_Use_ `/score <user_id>` _para ver por TEMA e SUBTEMA._",
+        "",
+    ]
+
+    if not scores:
+        linhas.append("— sem dados ainda —")
+        await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
+        return
+
+    for i, s in enumerate(scores, start=1):
+        linhas.append(
+            f"{i:02d}. `{s['user_id']}` → *{s['respondidas']}* "
+            f"(✅{s['acertos']} ❌{s['erros']}) | *{s['pct']:.1f}%*"
+        )
+
     await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
 
 
 async def zerar(update, context):
-    teclado = [
-        [
-            InlineKeyboardButton("✅ SIM, zerar", callback_data="ZERAR|YES"),
-            InlineKeyboardButton("❌ NÃO", callback_data="ZERAR|NO"),
-        ]
-    ]
+    user_id = str(update.effective_user.id)
+
+    teclado = InlineKeyboardMarkup([[  # noqa
+        InlineKeyboardButton("✅ Confirmar zerar", callback_data=f"RST|YES|{user_id}"),
+        InlineKeyboardButton("❌ Cancelar", callback_data=f"RST|NO|{user_id}"),
+    ]])
+
     await update.message.reply_text(
-        "⚠️ *Atenção:* isso vai apagar todas as suas estatísticas.\n\nConfirmar?",
-        reply_markup=InlineKeyboardMarkup(teclado),
+        "⚠️ *ATENÇÃO*\n\nIsso vai apagar *todas* as suas estatísticas (geral, por tema/subtema e por questão).\n\nConfirma?",
+        reply_markup=teclado,
         parse_mode="Markdown",
     )
 
 
 async def callback_handler(update, context):
     query = update.callback_query
-    if not query:
-        return
-
-    data = str(query.data or "")
+    await query.answer()
+    data = query.data
     user_id = str(update.effective_user.id)
 
-    # ===== confirmação do /zerar =====
-    if data.startswith("ZERAR|"):
-        decision = data.split("|", 1)[1].strip().upper()
+    # ===== confirmação de reset =====
+    if data.startswith("RST|"):
+        _, decision, owner_id = data.split("|", 2)
 
-        if decision not in ("YES", "NO"):
-            await query.answer("Opção inválida.", show_alert=True)
+        if owner_id != user_id:
+            await query.answer("Este comando não é seu.", show_alert=True)
             return
 
         if decision == "NO":
@@ -208,7 +229,7 @@ async def callback_handler(update, context):
 
     if data.startswith("RESP|"):
         _, qid_raw, marcada = data.split("|", 2)
-        qid = normalize_qid(qid_raw)
+        qid = str(qid_raw).strip()
 
         message_id = getattr(query.message, "message_id", None)
         correta_exibida = ""
