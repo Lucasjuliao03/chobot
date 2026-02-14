@@ -7,6 +7,14 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from db_turso import get_question_status_map, get_last_perm_for_user_question, record_sent_question
 
 
+def _norm_qid(x) -> str:
+    s = str(x).strip()
+    # Converte "123.0" -> "123" (Excel costuma vir como float)
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".", 1)[0]
+    return s
+
+
 # --- carga e normalização ---
 df = pd.read_excel("perguntascho2026.xlsx")
 df.columns = df.columns.str.strip()
@@ -14,300 +22,220 @@ df.columns = df.columns.str.strip()
 if "ID" not in df.columns:
     raise RuntimeError("Coluna 'ID' não encontrada no Excel.")
 
-df["ID"] = df["ID"].astype(str).str.strip()
+df["ID"] = df["ID"].apply(_norm_qid)
 df["Tema"] = df["Tema"].astype(str).str.strip()
 df["Subtema"] = df["Subtema"].astype(str).str.strip()
 
-QUESTIONS_BY_ID = {str(r["ID"]): r.dropna().to_dict() for _, r in df.iterrows()}
+QUESTIONS_BY_ID = {_norm_qid(r["ID"]): r.dropna().to_dict() for _, r in df.iterrows()}
 
 # precomputações
 TEMAS = sorted(df["Tema"].dropna().unique().tolist())
-TEMA_TO_QIDS = {
-    tema: df[df["Tema"] == tema]["ID"].astype(str).str.strip().tolist()
-    for tema in TEMAS
-}
-TEMA_TO_SUBTEMAS = {
-    tema: sorted(df[df["Tema"] == tema]["Subtema"].dropna().unique().tolist())
-    for tema in TEMAS
-}
+TEMA_TO_QIDS = {tema: df[df["Tema"] == tema]["ID"].tolist() for tema in TEMAS}
+TEMA_TO_SUBTEMAS = {tema: sorted(df[df["Tema"] == tema]["Subtema"].dropna().unique().tolist()) for tema in TEMAS}
 SUBTEMA_TO_QIDS = {}
 for tema in TEMAS:
     for sub in TEMA_TO_SUBTEMAS[tema]:
-        SUBTEMA_TO_QIDS[(tema, sub)] = (
-            df[(df["Tema"] == tema) & (df["Subtema"] == sub)]["ID"].astype(str).str.strip().tolist()
-        )
+        SUBTEMA_TO_QIDS[(tema, sub)] = df[(df["Tema"] == tema) & (df["Subtema"] == sub)]["ID"].tolist()
 
 
 def _extract_letter(value) -> str:
+    if value is None:
+        return ""
     s = str(value).strip().upper()
-    m = re.search(r"\b([ABCD])\b", s)
-    return m.group(1) if m else ""
+    if not s:
+        return ""
+    m = re.match(r"^([A-E])\b", s)
+    if m:
+        return m.group(1)
+    if len(s) == 1 and s in "ABCDE":
+        return s
+    return ""
 
 
-def get_question_by_id(qid: str) -> dict | None:
-    qid = str(qid).strip()
-    return QUESTIONS_BY_ID.get(qid)
-
-
-def get_correct_and_explanation(qid: str) -> tuple[str, str]:
-    q = get_question_by_id(qid)
+def get_correct_and_explanation(qid: str):
+    q = QUESTIONS_BY_ID.get(str(qid).strip())
     if not q:
         return "", ""
-    correta = _extract_letter(q.get("Resposta Correta", ""))
-    explicacao = str(q.get("Explicação", "") or "").strip()
-    return correta, explicacao
+
+    correta = _extract_letter(q.get("Gabarito", ""))
+    explic = str(q.get("Explicação", "") or "").strip()
+    return correta, explic
 
 
-def _subset_status_map(user_id: str, qids: list[str]) -> dict:
+def _count_acertos_erros(user_id: str, qids: list[str]):
     """
-    get_question_status_map(user_id) retorna status global: {qid: True/False}
-    Aqui filtramos apenas as questões do tema/subtema.
-    """
-    all_map = get_question_status_map(str(user_id))
-    qset = set(str(x).strip() for x in qids)
-    return {qid: st for qid, st in all_map.items() if str(qid).strip() in qset}
-
-
-def _count_acertos_erros(user_id: str, qids: list[str]) -> tuple[int, int]:
-    """
-    Retorna (acertos, erros) no conjunto de qids, considerando:
+    Conta acertos/erros para um conjunto de qids, baseado no status_map:
       - True  => acertou ao menos uma vez
       - False => errou e nunca acertou
-      - ausente => não respondida
+      - ausente => não respondeu
     """
-    sub = _subset_status_map(user_id, qids)
+    status_map = get_question_status_map(user_id)
+    wanted = set([str(x).strip() for x in qids if str(x).strip()])
+
+    sub = {k: v for k, v in status_map.items() if k in wanted}
+
     acertos = sum(1 for v in sub.values() if v is True)
     erros = sum(1 for v in sub.values() if v is False)
-    return acertos, erros
+    total_resp = len(sub)
+    total_q = len(wanted)
+
+    return acertos, erros, total_resp, total_q
 
 
-def _progress_icon(ok: int, total: int) -> str:
+async def enviar_temas(update, context, user_id: str):
     """
-    Regra:
-    - ⚪ se total==0 ou ok/total <= 50%
-    - 🟡 se 50% < ok/total < 100%
-    - ✅ se 100%
+    Lista temas com contagem de acertos/total de questões do tema.
     """
-    if total <= 0:
-        return "⚪"
-    ratio = ok / total
-    if ratio >= 1.0:
-        return "✅"
-    if ratio > 0.5:
-        return "🟡"
-    return "⚪"
-
-
-# ==========================================================
-# 🔥 embaralhamento não repetido por usuário/questão
-# ==========================================================
-LETRAS = ["A", "B", "C", "D"]
-
-def _make_perm_no_repeat(user_id: str, qid: str) -> list[str]:
-    """
-    Gera perm (ordem de letras originais) evitando repetir a última perm desse user/qid.
-    """
-    last_perm = get_last_perm_for_user_question(str(user_id), str(qid).strip())
-    last = [p.strip().upper() for p in last_perm.split(",")] if last_perm else []
-
-    base = LETRAS[:]  # ["A","B","C","D"]
-
-    for _ in range(12):
-        cand = base[:]
-        random.shuffle(cand)
-        if cand != last:
-            return cand
-
-    cand = base[:]
-    random.shuffle(cand)
-    return cand
-
-
-def _apply_perm(q: dict, perm: list[str], correta_original: str):
-    """
-    perm: lista de letras ORIGINAIS na ordem exibida A,B,C,D
-    retorna:
-      alternativas_exibidas: dict {"A":texto, ...}
-      correta_exibida: "A"/"B"/"C"/"D"
-    """
-    orig_to_text = {
-        "A": q.get("Opção A", ""),
-        "B": q.get("Opção B", ""),
-        "C": q.get("Opção C", ""),
-        "D": q.get("Opção D", ""),
-    }
-
-    exibidas = {}
-    correta_exibida = ""
-
-    for i, letra_exibida in enumerate(LETRAS):
-        letra_orig = perm[i]
-        exibidas[letra_exibida] = orig_to_text.get(letra_orig, "")
-        if letra_orig == correta_original:
-            correta_exibida = letra_exibida
-
-    return exibidas, correta_exibida
-
-
-# =========================
-# UI: temas / subtemas
-# =========================
-async def enviar_temas(update, context):
-    user_id = str(update.effective_user.id)
-
-    keyboard = []
+    teclado = []
     for tema in TEMAS:
         qids = TEMA_TO_QIDS.get(tema, [])
-        total = len(qids)
+        acertos, erros, total_resp, total_q = _count_acertos_erros(user_id, qids)
 
-        acertos, _erros = _count_acertos_erros(user_id, qids)
-        icon = _progress_icon(acertos, total)
+        label = f"{tema}  —  {acertos}/{total_q}"
+        teclado.append([InlineKeyboardButton(label, callback_data=f"TEMA|{tema}")])
 
-        label = f"{tema}  |  {icon} {acertos}/{total}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"TEMA|{tema}")])
+    teclado.append([InlineKeyboardButton("📊 Estatísticas", callback_data="STATS|")])
+    teclado.append([InlineKeyboardButton("♻️ Resetar estatísticas", callback_data="RST|ASK")])
 
     await update.message.reply_text(
-        "📚 *Escolha o TEMA:*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        "Escolha um *Tema*:",
+        reply_markup=InlineKeyboardMarkup(teclado),
+        parse_mode="Markdown",
     )
 
 
-async def enviar_subtemas(update, context, tema: str):
-    user_id = str(update.effective_user.id)
+async def enviar_subtemas(update, context, user_id: str, tema: str):
+    """
+    Lista subtemas do tema, com acertos/total de questões do subtema.
+    """
+    subs = TEMA_TO_SUBTEMAS.get(tema, [])
+    teclado = []
 
-    subtemas = TEMA_TO_SUBTEMAS.get(tema, [])
-    keyboard = []
+    for sub in subs:
+        qids = SUBTEMA_TO_QIDS.get((tema, sub), [])
+        acertos, erros, total_resp, total_q = _count_acertos_erros(user_id, qids)
 
-    for s in subtemas:
-        qids = SUBTEMA_TO_QIDS.get((tema, s), [])
-        total = len(qids)
+        label = f"{sub}  —  {acertos}/{total_q}"
+        teclado.append([InlineKeyboardButton(label, callback_data=f"SUB|{sub}")])
 
-        acertos, _erros = _count_acertos_erros(user_id, qids)
-        icon = _progress_icon(acertos, total)
-
-        label = f"{s}  |  {icon} {acertos}/{total}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"SUB|{s}")])
+    teclado.append([InlineKeyboardButton("⬅️ Voltar", callback_data="BACK|TEMAS")])
 
     await update.callback_query.edit_message_text(
-        f"📘 *Tema:* {tema}\n\n📂 Escolha o *SUBTEMA:*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
-
-
-# =========================
-# montar fila com prioridade
-# =========================
-async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, limite: int = 20):
-    base = df[
-        (df["Tema"] == str(tema).strip()) &
-        (df["Subtema"] == str(subtema).strip())
-    ].copy()
-
-    if base.empty:
-        await update.effective_chat.send_message("⚠️ Sem questões para esse Tema/Subtema.")
-        return
-
-    base["ID"] = base["ID"].astype(str).str.strip()
-    qids = base["ID"].tolist()
-
-    all_status = get_question_status_map(str(user_id))
-
-    nao_resp, erradas, acertadas = [], [], []
-    for qid in qids:
-        st = all_status.get(str(qid).strip())
-        if st is None:
-            nao_resp.append(qid)
-        elif st is False:
-            erradas.append(qid)
-        else:
-            acertadas.append(qid)
-
-    nao_resp = base[base["ID"].isin(nao_resp)].sample(frac=1).to_dict("records")
-    erradas = base[base["ID"].isin(erradas)].sample(frac=1).to_dict("records")
-    acertadas = base[base["ID"].isin(acertadas)].sample(frac=1).to_dict("records")
-
-    fila = (nao_resp + erradas + acertadas)[:limite]
-
-    fila_clean = []
-    for item in fila:
-        item["ID"] = str(item.get("ID", "")).strip()
-        fila_clean.append(item)
-
-    context.chat_data["quiz"] = {
-        "user_id": str(user_id),
-        "tema": tema,
-        "subtema": subtema,
-        "perguntas": fila_clean,
-        "index": 0
-    }
-
-    await update.effective_chat.send_message(
-        f"🎯 *Quiz iniciado*\n📘 Tema: *{tema}*\n📂 Subtema: *{subtema}*\n\nPrioridade: *não respondidas → erradas → restantes*",
-        parse_mode="Markdown"
-    )
-
-    await enviar_proxima(update, context)
-
-
-# =========================
-# enviar próxima
-# =========================
-async def enviar_proxima(update, context):
-    quiz = context.chat_data.get("quiz")
-    if not quiz or quiz["index"] >= len(quiz["perguntas"]):
-        await update.effective_chat.send_message("✅ Fim das questões desta sessão.")
-        return
-
-    q = quiz["perguntas"][quiz["index"]]
-    quiz["index"] += 1
-
-    qid = str(q.get("ID", "")).strip()
-    user_id = str(quiz.get("user_id") or "")
-
-    correta_original, _exp = get_correct_and_explanation(qid)
-
-    perm = _make_perm_no_repeat(user_id, qid)
-    alternativas_exibidas, correta_exibida = _apply_perm(q, perm, correta_original)
-
-    context.chat_data["correta_exibida"] = correta_exibida
-    context.chat_data["qid_atual"] = qid
-    context.chat_data["perm_atual"] = ",".join(perm)
-
-    texto = (
-        f"📘 *Tema:* {quiz['tema']}\n"
-        f"📂 *Subtema:* {quiz['subtema']}\n\n"
-        f"*{q.get('Pergunta','')}*\n\n"
-        f"A) {alternativas_exibidas.get('A','')}\n"
-        f"B) {alternativas_exibidas.get('B','')}\n"
-        f"C) {alternativas_exibidas.get('C','')}\n"
-        f"D) {alternativas_exibidas.get('D','')}"
-    )
-
-    teclado = [[
-        InlineKeyboardButton("A", callback_data=f"RESP|{qid}|A"),
-        InlineKeyboardButton("B", callback_data=f"RESP|{qid}|B"),
-        InlineKeyboardButton("C", callback_data=f"RESP|{qid}|C"),
-        InlineKeyboardButton("D", callback_data=f"RESP|{qid}|D"),
-    ]]
-
-    msg = await update.effective_chat.send_message(
-        texto,
+        f"Tema: *{tema}*\nEscolha um *Subtema*:",
         reply_markup=InlineKeyboardMarkup(teclado),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
-    try:
-        record_sent_question(
-            user_id=user_id,
-            qid=qid,
-            message_id=msg.message_id,
-            correta_exibida=correta_exibida,
-            perm=",".join(perm)
+
+def _format_question(qid: str):
+    q = QUESTIONS_BY_ID.get(str(qid).strip())
+    if not q:
+        return "Questão não encontrada.", [], ""
+
+    enun = str(q.get("Enunciado", "") or "").strip()
+    opc_a = str(q.get("A", "") or "").strip()
+    opc_b = str(q.get("B", "") or "").strip()
+    opc_c = str(q.get("C", "") or "").strip()
+    opc_d = str(q.get("D", "") or "").strip()
+    opc_e = str(q.get("E", "") or "").strip()
+
+    correta = _extract_letter(q.get("Gabarito", ""))
+
+    # teclado
+    teclado = [
+        [
+            InlineKeyboardButton("A", callback_data=f"RESP|{qid}|A"),
+            InlineKeyboardButton("B", callback_data=f"RESP|{qid}|B"),
+            InlineKeyboardButton("C", callback_data=f"RESP|{qid}|C"),
+            InlineKeyboardButton("D", callback_data=f"RESP|{qid}|D"),
+            InlineKeyboardButton("E", callback_data=f"RESP|{qid}|E"),
+        ]
+    ]
+
+    msg = (
+        f"*Questão {qid}*\n\n"
+        f"{enun}\n\n"
+        f"*A)* {opc_a}\n"
+        f"*B)* {opc_b}\n"
+        f"*C)* {opc_c}\n"
+        f"*D)* {opc_d}\n"
+        f"*E)* {opc_e}\n"
+    )
+
+    return msg, teclado, correta
+
+
+async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, limite: int = 20):
+    """
+    Seleciona perguntas do subtema e inicia o fluxo.
+    """
+    qids = SUBTEMA_TO_QIDS.get((tema, subtema), [])
+    if not qids:
+        await update.callback_query.edit_message_text(
+            "Nenhuma questão encontrada para esse subtema."
         )
-    except Exception:
-        pass
+        return
+
+    # embaralha e pega limite
+    qids = qids[:]
+    random.shuffle(qids)
+    qids = qids[: int(limite)]
+
+    # salva estado
+    context.chat_data["tema"] = tema
+    context.chat_data["subtema"] = subtema
+    context.chat_data["fila_qids"] = qids
+    context.chat_data["idx"] = 0
+
+    await enviar_proxima(update, context, user_id, via_edit=True)
+
+
+async def enviar_proxima(update, context, user_id: str, via_edit: bool = False):
+    fila = context.chat_data.get("fila_qids") or []
+    idx = int(context.chat_data.get("idx") or 0)
+
+    if idx >= len(fila):
+        txt = "✅ *Fim do quiz!*"
+        if via_edit and update.callback_query:
+            await update.callback_query.edit_message_text(txt, parse_mode="Markdown")
+        else:
+            await update.message.reply_text(txt, parse_mode="Markdown")
+        return
+
+    qid = str(fila[idx]).strip()
+
+    msg, teclado, correta = _format_question(qid)
+
+    # Permissão para "reforço": evita repetir a mesma correta como padrão quando há bug
+    perm = get_last_perm_for_user_question(user_id, qid) or ""
+    # registra "sent" com correta exibida + perm
+    # message_id vai ser conhecido após enviar; então registra depois de enviar (aqui fazemos em 2 etapas)
+    if via_edit and update.callback_query:
+        sent = await update.callback_query.edit_message_text(
+            msg,
+            reply_markup=InlineKeyboardMarkup(teclado),
+            parse_mode="Markdown",
+        )
+        message_id = getattr(sent, "message_id", None)
+    else:
+        sent = await update.message.reply_text(
+            msg,
+            reply_markup=InlineKeyboardMarkup(teclado),
+            parse_mode="Markdown",
+        )
+        message_id = getattr(sent, "message_id", None)
+
+    if message_id is not None:
+        record_sent_question(user_id, qid, message_id, correta, perm)
+
+
+def get_question_meta(qid: str):
+    q = QUESTIONS_BY_ID.get(str(qid).strip())
+    if not q:
+        return "", ""
+    tema = str(q.get("Tema", "") or "").strip()
+    sub = str(q.get("Subtema", "") or "").strip()
+    return tema, sub
 
 
 

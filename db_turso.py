@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timezone
 
 import libsql
@@ -20,6 +21,15 @@ _CONN = libsql.connect(database=TURSO_URL, auth_token=TURSO_AUTH_TOKEN)
 
 def _utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _norm_qid(x) -> str:
+    """Normaliza IDs de questão (Excel costuma vir como float: '123.0')."""
+    s = str(x).strip()
+    # Converte "123.0" -> "123"
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".", 1)[0]
+    return s
 
 
 def _fetchall(sql: str, params: tuple = ()):
@@ -82,6 +92,9 @@ def init_db():
     _exec("CREATE INDEX IF NOT EXISTS idx_sent_user_qid_mid ON sent(user_id, qid, message_id)")
     _exec("CREATE INDEX IF NOT EXISTS idx_sent_user_qid ON sent(user_id, qid)")
 
+    # ✅ Migração 1x: corrige qid antigos ('1.0' -> '1')
+    migrate_qids()
+
 
 def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str, subtema: str):
     ts = _utc_now_iso()
@@ -90,7 +103,7 @@ def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str
         INSERT INTO respostas (user_id, qid, acertou, marcada, tema, subtema, timestamp)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (str(user_id), str(qid).strip(), 1 if acertou else 0, str(marcada), str(tema or ""), str(subtema or ""), ts),
+        (str(user_id), _norm_qid(qid), 1 if acertou else 0, str(marcada), str(tema or ""), str(subtema or ""), ts),
     )
 
 
@@ -177,7 +190,7 @@ def get_question_status_map(user_id: str):
 
     status = {}
     for qid, ok in rows:
-        q = str(qid).strip()
+        q = _norm_qid(qid)
         if not q:
             continue
         status[q] = True if int(ok or 0) == 1 else False
@@ -199,7 +212,7 @@ def record_sent_question(user_id: str, qid: str, message_id: int, correta_exibid
         """,
         (
             str(user_id),
-            str(qid).strip(),
+            _norm_qid(qid),
             int(message_id),
             str(correta_exibida or "").strip().upper(),
             str(perm or "").strip(),
@@ -210,7 +223,7 @@ def record_sent_question(user_id: str, qid: str, message_id: int, correta_exibid
 
 def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
     uid = str(user_id)
-    q = str(qid).strip()
+    q = _norm_qid(qid)
     mid = int(message_id)
 
     row = _fetchone(
@@ -230,7 +243,7 @@ def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
 
 def get_last_perm_for_user_question(user_id: str, qid: str) -> str:
     uid = str(user_id)
-    q = str(qid).strip()
+    q = _norm_qid(qid)
 
     row = _fetchone(
         """
@@ -368,3 +381,46 @@ def get_user_topic_breakdown_full(user_id: str):
         )
 
     return {"temas": temas, "tema_subtema": tema_subtema}
+
+
+def migrate_qids():
+    """Migra qids antigos no Turso: 'N.0' -> 'N'. Idempotente."""
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT
+        )
+        """
+    )
+
+    mig_name = "2026-02-13_normalize_qid_float_to_int"
+    row = _fetchone("SELECT name FROM migrations WHERE name = ?", (mig_name,))
+    if row:
+        return
+
+    # limpa espaços
+    _exec("UPDATE respostas SET qid = TRIM(qid) WHERE qid IS NOT NULL")
+    _exec("UPDATE sent SET qid = TRIM(qid) WHERE qid IS NOT NULL")
+
+    # coleta qids distintos
+    r_rows = _fetchall("SELECT DISTINCT qid FROM respostas WHERE qid IS NOT NULL")
+    s_rows = _fetchall("SELECT DISTINCT qid FROM sent WHERE qid IS NOT NULL")
+
+    qids = set()
+    for (q,) in r_rows:
+        qids.add(str(q))
+    for (q,) in s_rows:
+        qids.add(str(q))
+
+    # atualiza qids que mudam
+    for old in sorted(qids):
+        new_q = _norm_qid(old)
+        if new_q != old:
+            _exec("UPDATE respostas SET qid = ? WHERE qid = ?", (new_q, old))
+            _exec("UPDATE sent SET qid = ? WHERE qid = ?", (new_q, old))
+
+    _exec(
+        "INSERT INTO migrations (name, applied_at) VALUES (?, ?)",
+        (mig_name, _utc_now_iso()),
+    )
