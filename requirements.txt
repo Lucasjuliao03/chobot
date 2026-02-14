@@ -3,4 +3,4 @@ pandas
 openpyxl
 python-dotenv
 libsql
-
+aiohttp
