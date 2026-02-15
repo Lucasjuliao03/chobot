@@ -21,6 +21,9 @@ from quiz import (
     iniciar_quiz,
     enviar_proxima,
     get_correct_and_explanation,
+    # ✅ NOVO: totais do banco de questões (Excel)
+    TEMA_TO_QIDS,
+    SUBTEMA_TO_QIDS,
 )
 
 load_dotenv()
@@ -57,19 +60,21 @@ async def start(update, context):
 
 async def progresso(update, context):
     """
-    AJUSTE MÍNIMO: apenas layout do /progresso.
-    - Mantém somatório geral como já vinha.
-    - Agrupa Subtemas por Tema e padroniza com indent (estilo da imagem).
-    - Não altera nenhuma outra função/fluxo.
+    AJUSTE MÍNIMO:
+    - Mantém somatório geral.
+    - Para TEMA e SUBTEMA:
+        Linha principal vira RESPONDIDAS / TOTAL_NO_BANCO (Excel)
+        E dentro: ✅acertos/❌erros (do total respondido).
+    - Agrupamento por TEMA mantido.
     """
     user_id = str(update.effective_user.id)
     geral = get_overall_progress(user_id)
-    total = geral["acertos"] + geral["erros"]
+    total_respondidas_geral = geral["acertos"] + geral["erros"]
 
     linhas = [
         "📊 *Progresso Geral*",
         "",
-        f"Respondidas: *{total}*",
+        f"Respondidas: *{total_respondidas_geral}*",
         f"✅ Acertos: *{geral['acertos']}*",
         f"❌ Erros: *{geral['erros']}*",
         f"🎯 Aproveitamento: *{geral['pct']:.1f}%*",
@@ -86,7 +91,7 @@ async def progresso(update, context):
 
     # ===== agrupar por tema =====
     grouped = {}
-    order_tema = []  # preserva ordem de aparição (já vem por total desc)
+    order_tema = []
     for r in breakdown:
         tema = (r.get("tema") or "—").strip() or "—"
         if tema not in grouped:
@@ -94,28 +99,45 @@ async def progresso(update, context):
             order_tema.append(tema)
         grouped[tema].append(r)
 
-    # ===== imprimir com somatório por TEMA e sublinhas por SUBTEMA =====
+    # ===== imprimir com total do BANCO (Excel) =====
     for tema in order_tema:
         items = grouped.get(tema, [])
 
-        t_total = sum(int(x.get("total") or 0) for x in items)
-        t_acertos = sum(int(x.get("acertos") or 0) for x in items)
-        t_erros = sum(int(x.get("erros") or 0) for x in items)
-        t_pct = (t_acertos / t_total * 100.0) if t_total else 0.0
+        # respondidas no banco (somatório do top20 daquele tema)
+        resp_total = sum(int(x.get("total") or 0) for x in items)
+        resp_acertos = sum(int(x.get("acertos") or 0) for x in items)
+        resp_erros = sum(int(x.get("erros") or 0) for x in items)
 
-        # Linha do TEMA (somatório do que aparece no top20)
+        # total de questões no banco (Excel) para o TEMA
+        bank_total = len(TEMA_TO_QIDS.get(tema, []))
+
+        # % de conclusão (respondidas / total do banco)
+        pct_conclusao = (resp_total / bank_total * 100.0) if bank_total else 0.0
+
+        # % de aproveitamento (acertos / respondidas)
+        pct_aprov = (resp_acertos / resp_total * 100.0) if resp_total else 0.0
+
+        # Linha do TEMA: RESPONDIDAS / BANCO  +  (✅/❌ do RESPONDIDO)
         linhas.append(
-            f"*{tema}* (*{t_pct:.1f}%*) — *{t_acertos}/{t_total}* (✅{t_acertos}/❌{t_erros})"
+            f"*{tema}* ({pct_conclusao:.1f}%) — *{resp_total}/{bank_total}* (✅{resp_acertos}/❌{resp_erros}) | *{pct_aprov:.1f}%*"
         )
 
-        # Subtemas do tema (mantém a ordem do breakdown)
+        # Subtemas do tema
         for r in items:
             sub = (r.get("subtema") or "—").strip() or "—"
+            s_total = int(r.get("total") or 0)      # respondidas
+            s_acertos = int(r.get("acertos") or 0)  # acertos
+            s_erros = int(r.get("erros") or 0)      # erros
+
+            bank_total_sub = len(SUBTEMA_TO_QIDS.get((tema, sub), []))
+            pct_conc_sub = (s_total / bank_total_sub * 100.0) if bank_total_sub else 0.0
+            pct_aprov_sub = (s_acertos / s_total * 100.0) if s_total else 0.0
+
             linhas.append(
-                f"↳ _{sub}_ (*{r['pct']:.1f}%*) — {r['acertos']}/{r['total']} (✅{r['acertos']}/❌{r['erros']})"
+                f"↳ _{sub}_ ({pct_conc_sub:.1f}%) — {s_total}/{bank_total_sub} (✅{s_acertos}/❌{s_erros}) | *{pct_aprov_sub:.1f}%*"
             )
 
-        linhas.append("")  # espaçamento entre temas
+        linhas.append("")
 
     await update.message.reply_text("\n".join(linhas).rstrip(), parse_mode="Markdown")
 
