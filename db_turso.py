@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime, timezone
 
 import libsql
@@ -20,6 +21,36 @@ _CONN = libsql.connect(database=TURSO_URL, auth_token=TURSO_AUTH_TOKEN)
 
 def _utc_now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _norm_qid(qid) -> str:
+    """Normaliza QID para casar com o Excel e evitar '908.0' etc.
+    Mantém apenas inteiros em string quando o decimal é apenas zeros.
+    """
+    s = str(qid).strip()
+    if not s:
+        return ""
+    s = s.strip()
+
+    # Ex: '908.0', '908.00' -> '908'
+    if re.match(r"^\d+\.0+$", s):
+        return s.split(".")[0]
+
+    # Ex: '908.' -> '908' | '908.000' -> '908'
+    if "." in s:
+        s2 = s.rstrip("0").rstrip(".")
+        if s2.isdigit():
+            return s2
+
+    # Fallback: tenta converter float -> int quando for inteiro
+    try:
+        f = float(s)
+        if f.is_integer():
+            return str(int(f))
+    except Exception:
+        pass
+
+    return s
 
 
 def _fetchall(sql: str, params: tuple = ()):
@@ -90,7 +121,7 @@ def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str
         INSERT INTO respostas (user_id, qid, acertou, marcada, tema, subtema, timestamp)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (str(user_id), str(qid).strip(), 1 if acertou else 0, str(marcada), str(tema or ""), str(subtema or ""), ts),
+        (str(user_id), _norm_qid(qid), 1 if acertou else 0, str(marcada), str(tema or ""), str(subtema or ""), ts),
     )
 
 
@@ -145,11 +176,11 @@ def get_topic_breakdown(user_id: str, limit: int = 20):
         pct = (acertos / total * 100.0) if total else 0.0
         out.append(
             {
-                "tema": str(tema or ""),
-                "subtema": str(subtema or ""),
+                "tema": str(tema or "").strip(),
+                "subtema": str(subtema or "").strip(),
+                "total": total,
                 "acertos": acertos,
                 "erros": erros,
-                "total": total,
                 "pct": pct,
             }
         )
@@ -177,7 +208,7 @@ def get_question_status_map(user_id: str):
 
     status = {}
     for qid, ok in rows:
-        q = str(qid).strip()
+        q = _norm_qid(qid)
         if not q:
             continue
         status[q] = True if int(ok or 0) == 1 else False
@@ -199,7 +230,7 @@ def record_sent_question(user_id: str, qid: str, message_id: int, correta_exibid
         """,
         (
             str(user_id),
-            str(qid).strip(),
+            _norm_qid(qid),
             int(message_id),
             str(correta_exibida or "").strip().upper(),
             str(perm or "").strip(),
@@ -210,7 +241,7 @@ def record_sent_question(user_id: str, qid: str, message_id: int, correta_exibid
 
 def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
     uid = str(user_id)
-    q = str(qid).strip()
+    q = _norm_qid(qid)
     mid = int(message_id)
 
     row = _fetchone(
@@ -230,7 +261,7 @@ def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
 
 def get_last_perm_for_user_question(user_id: str, qid: str) -> str:
     uid = str(user_id)
-    q = str(qid).strip()
+    q = _norm_qid(qid)
 
     row = _fetchone(
         """
@@ -267,7 +298,7 @@ def get_users_overall_scores(limit: int | None = None):
             """
         )
     else:
-        lim = max(0, int(limit))
+        lim = max(1, int(limit))
         rows = _fetchall(
             """
             SELECT
@@ -284,14 +315,14 @@ def get_users_overall_scores(limit: int | None = None):
         )
 
     out = []
-    for uid, respondidas, acertos, erros in rows:
+    for user_id, respondidas, acertos, erros in rows:
         respondidas = int(respondidas or 0)
         acertos = int(acertos or 0)
         erros = int(erros or 0)
         pct = (acertos / respondidas * 100.0) if respondidas else 0.0
         out.append(
             {
-                "user_id": str(uid),
+                "user_id": str(user_id),
                 "respondidas": respondidas,
                 "acertos": acertos,
                 "erros": erros,
@@ -299,72 +330,3 @@ def get_users_overall_scores(limit: int | None = None):
             }
         )
     return out
-
-
-def get_user_topic_breakdown_full(user_id: str):
-    """
-    Retorna duas visões:
-      - por tema (agregado)
-      - por tema/subtema (detalhado)
-    """
-    uid = str(user_id).strip()
-
-    rows_tema = _fetchall(
-        """
-        SELECT
-            COALESCE(tema, '') AS tema,
-            COALESCE(SUM(acertou), 0) AS acertos,
-            COUNT(*) - COALESCE(SUM(acertou), 0) AS erros,
-            COUNT(*) AS total
-        FROM respostas
-        WHERE user_id = ?
-        GROUP BY tema
-        ORDER BY total DESC
-        """,
-        (uid,),
-    )
-
-    temas = []
-    for tema, acertos, erros, total in rows_tema:
-        acertos = int(acertos or 0)
-        erros = int(erros or 0)
-        total = int(total or 0)
-        pct = (acertos / total * 100.0) if total else 0.0
-        temas.append(
-            {"tema": str(tema or ""), "acertos": acertos, "erros": erros, "total": total, "pct": pct}
-        )
-
-    rows_ts = _fetchall(
-        """
-        SELECT
-            COALESCE(tema, '') AS tema,
-            COALESCE(subtema, '') AS subtema,
-            COALESCE(SUM(acertou), 0) AS acertos,
-            COUNT(*) - COALESCE(SUM(acertou), 0) AS erros,
-            COUNT(*) AS total
-        FROM respostas
-        WHERE user_id = ?
-        GROUP BY tema, subtema
-        ORDER BY total DESC
-        """,
-        (uid,),
-    )
-
-    tema_subtema = []
-    for tema, subtema, acertos, erros, total in rows_ts:
-        acertos = int(acertos or 0)
-        erros = int(erros or 0)
-        total = int(total or 0)
-        pct = (acertos / total * 100.0) if total else 0.0
-        tema_subtema.append(
-            {
-                "tema": str(tema or ""),
-                "subtema": str(subtema or ""),
-                "acertos": acertos,
-                "erros": erros,
-                "total": total,
-                "pct": pct,
-            }
-        )
-
-    return {"temas": temas, "tema_subtema": tema_subtema}

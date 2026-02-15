@@ -7,6 +7,33 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from db_turso import get_question_status_map, get_last_perm_for_user_question, record_sent_question
 
 
+def _norm_qid(x) -> str:
+    """
+    Ajuste MÍNIMO e necessário:
+    - Normaliza IDs vindos do Excel/fluxo para evitar '908.0' vs '908'
+    - Mantém o resto do arquivo intacto.
+    """
+    s = str(x).strip()
+    if not s:
+        return ""
+    # '908.0', '908.00' -> '908'
+    if re.match(r"^\d+\.0+$", s):
+        return s.split(".")[0]
+    # '908.' -> '908' | '908.000' -> '908'
+    if "." in s:
+        s2 = s.rstrip("0").rstrip(".")
+        if s2.isdigit():
+            return s2
+    # fallback: float inteiro -> int
+    try:
+        f = float(s)
+        if f.is_integer():
+            return str(int(f))
+    except Exception:
+        pass
+    return s
+
+
 # --- carga e normalização ---
 df = pd.read_excel("perguntascho2026.xlsx")
 df.columns = df.columns.str.strip()
@@ -14,7 +41,8 @@ df.columns = df.columns.str.strip()
 if "ID" not in df.columns:
     raise RuntimeError("Coluna 'ID' não encontrada no Excel.")
 
-df["ID"] = df["ID"].astype(str).str.strip()
+# ✅ AJUSTE NECESSÁRIO: normaliza IDs para não virar 'xxx.0'
+df["ID"] = df["ID"].apply(_norm_qid)
 df["Tema"] = df["Tema"].astype(str).str.strip()
 df["Subtema"] = df["Subtema"].astype(str).str.strip()
 
@@ -23,7 +51,7 @@ QUESTIONS_BY_ID = {str(r["ID"]): r.dropna().to_dict() for _, r in df.iterrows()}
 # precomputações
 TEMAS = sorted(df["Tema"].dropna().unique().tolist())
 TEMA_TO_QIDS = {
-    tema: df[df["Tema"] == tema]["ID"].astype(str).str.strip().tolist()
+    tema: df[df["Tema"] == tema]["ID"].apply(_norm_qid).tolist()
     for tema in TEMAS
 }
 TEMA_TO_SUBTEMAS = {
@@ -34,7 +62,7 @@ SUBTEMA_TO_QIDS = {}
 for tema in TEMAS:
     for sub in TEMA_TO_SUBTEMAS[tema]:
         SUBTEMA_TO_QIDS[(tema, sub)] = (
-            df[(df["Tema"] == tema) & (df["Subtema"] == sub)]["ID"].astype(str).str.strip().tolist()
+            df[(df["Tema"] == tema) & (df["Subtema"] == sub)]["ID"].apply(_norm_qid).tolist()
         )
 
 
@@ -45,11 +73,13 @@ def _extract_letter(value) -> str:
 
 
 def get_question_by_id(qid: str) -> dict | None:
-    qid = str(qid).strip()
+    # ✅ AJUSTE NECESSÁRIO: normaliza antes de buscar
+    qid = _norm_qid(qid)
     return QUESTIONS_BY_ID.get(qid)
 
 
 def get_correct_and_explanation(qid: str) -> tuple[str, str]:
+    qid = _norm_qid(qid)  # ✅ necessário
     q = get_question_by_id(qid)
     if not q:
         return "", ""
@@ -64,8 +94,9 @@ def _subset_status_map(user_id: str, qids: list[str]) -> dict:
     Aqui filtramos apenas as questões do tema/subtema.
     """
     all_map = get_question_status_map(str(user_id))
-    qset = set(str(x).strip() for x in qids)
-    return {qid: st for qid, st in all_map.items() if str(qid).strip() in qset}
+    # ✅ AJUSTE NECESSÁRIO: normaliza qids do filtro
+    qset = set(_norm_qid(x) for x in qids)
+    return {qid: st for qid, st in all_map.items() if _norm_qid(qid) in qset}
 
 
 def _count_acertos_erros(user_id: str, qids: list[str]) -> tuple[int, int]:
@@ -103,10 +134,14 @@ def _progress_icon(ok: int, total: int) -> str:
 # ==========================================================
 LETRAS = ["A", "B", "C", "D"]
 
+
 def _make_perm_no_repeat(user_id: str, qid: str) -> list[str]:
     """
     Gera perm (ordem de letras originais) evitando repetir a última perm desse user/qid.
     """
+    # ✅ AJUSTE NECESSÁRIO: normaliza qid para bater com o Turso
+    qid = _norm_qid(qid)
+
     last_perm = get_last_perm_for_user_question(str(user_id), str(qid).strip())
     last = [p.strip().upper() for p in last_perm.split(",")] if last_perm else []
 
@@ -209,20 +244,22 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
         await update.effective_chat.send_message("⚠️ Sem questões para esse Tema/Subtema.")
         return
 
-    base["ID"] = base["ID"].astype(str).str.strip()
+    # ✅ AJUSTE NECESSÁRIO: normaliza IDs do recorte também
+    base["ID"] = base["ID"].apply(_norm_qid)
     qids = base["ID"].tolist()
 
     all_status = get_question_status_map(str(user_id))
 
     nao_resp, erradas, acertadas = [], [], []
     for qid in qids:
-        st = all_status.get(str(qid).strip())
+        qn = _norm_qid(qid)  # ✅ necessário
+        st = all_status.get(qn)
         if st is None:
-            nao_resp.append(qid)
+            nao_resp.append(qn)
         elif st is False:
-            erradas.append(qid)
+            erradas.append(qn)
         else:
-            acertadas.append(qid)
+            acertadas.append(qn)
 
     nao_resp = base[base["ID"].isin(nao_resp)].sample(frac=1).to_dict("records")
     erradas = base[base["ID"].isin(erradas)].sample(frac=1).to_dict("records")
@@ -232,7 +269,8 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
 
     fila_clean = []
     for item in fila:
-        item["ID"] = str(item.get("ID", "")).strip()
+        # ✅ AJUSTE NECESSÁRIO: garante ID normalizado no payload
+        item["ID"] = _norm_qid(item.get("ID", ""))
         fila_clean.append(item)
 
     context.chat_data["quiz"] = {
@@ -263,7 +301,7 @@ async def enviar_proxima(update, context):
     q = quiz["perguntas"][quiz["index"]]
     quiz["index"] += 1
 
-    qid = str(q.get("ID", "")).strip()
+    qid = _norm_qid(q.get("ID", ""))  # ✅ AJUSTE NECESSÁRIO
     user_id = str(quiz.get("user_id") or "")
 
     correta_original, _exp = get_correct_and_explanation(qid)
@@ -301,13 +339,12 @@ async def enviar_proxima(update, context):
     try:
         record_sent_question(
             user_id=user_id,
-            qid=qid,
+            qid=qid,  # ✅ já normalizado
             message_id=msg.message_id,
             correta_exibida=correta_exibida,
             perm=",".join(perm)
         )
     except Exception:
         pass
-
 
 
