@@ -330,3 +330,87 @@ def get_users_overall_scores(limit: int | None = None):
             }
         )
     return out
+
+
+def get_user_topic_breakdown_full(user_id: str):
+    """
+    Retorna um 'blob' com:
+      - temas: agregação por TEMA
+      - tema_subtema: agregação por TEMA + SUBTEMA
+    Usado no /score <user_id>.
+
+    Formato:
+    {
+      "temas": [{"tema":..., "total":..., "acertos":..., "erros":..., "pct":...}, ...],
+      "tema_subtema": [{"tema":..., "subtema":..., "total":..., "acertos":..., "erros":..., "pct":...}, ...]
+    }
+    """
+    uid = str(user_id)
+
+    # ===== Por TEMA =====
+    rows_tema = _fetchall(
+        """
+        SELECT
+            COALESCE(tema, '') AS tema,
+            COALESCE(SUM(acertou), 0) AS acertos,
+            COUNT(*) - COALESCE(SUM(acertou), 0) AS erros,
+            COUNT(*) AS total
+        FROM respostas
+        WHERE user_id = ?
+        GROUP BY tema
+        ORDER BY total DESC
+        """,
+        (uid,),
+    )
+
+    temas = []
+    for tema, acertos, erros, total in rows_tema:
+        acertos = int(acertos or 0)
+        erros = int(erros or 0)
+        total = int(total or 0)
+        pct = (acertos / total * 100.0) if total else 0.0
+        temas.append(
+            {
+                "tema": str(tema or "").strip(),
+                "total": total,
+                "acertos": acertos,
+                "erros": erros,
+                "pct": pct,
+            }
+        )
+
+    # ===== Por TEMA / SUBTEMA =====
+    rows_tema_sub = _fetchall(
+        """
+        SELECT
+            COALESCE(tema, '') AS tema,
+            COALESCE(subtema, '') AS subtema,
+            COALESCE(SUM(acertou), 0) AS acertos,
+            COUNT(*) - COALESCE(SUM(acertou), 0) AS erros,
+            COUNT(*) AS total
+        FROM respostas
+        WHERE user_id = ?
+        GROUP BY tema, subtema
+        ORDER BY total DESC
+        """,
+        (uid,),
+    )
+
+    tema_subtema = []
+    for tema, subtema, acertos, erros, total in rows_tema_sub:
+        acertos = int(acertos or 0)
+        erros = int(erros or 0)
+        total = int(total or 0)
+        pct = (acertos / total * 100.0) if total else 0.0
+        tema_subtema.append(
+            {
+                "tema": str(tema or "").strip(),
+                "subtema": str(subtema or "").strip(),
+                "total": total,
+                "acertos": acertos,
+                "erros": erros,
+                "pct": pct,
+            }
+        )
+
+    return {"temas": temas, "tema_subtema": tema_subtema}
