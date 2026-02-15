@@ -56,6 +56,12 @@ async def start(update, context):
 
 
 async def progresso(update, context):
+    """
+    AJUSTE MÍNIMO: apenas layout do /progresso.
+    - Mantém somatório geral como já vinha.
+    - Agrupa Subtemas por Tema e padroniza com indent (estilo da imagem).
+    - Não altera nenhuma outra função/fluxo.
+    """
     user_id = str(update.effective_user.id)
     geral = get_overall_progress(user_id)
     total = geral["acertos"] + geral["erros"]
@@ -69,19 +75,49 @@ async def progresso(update, context):
         f"🎯 Aproveitamento: *{geral['pct']:.1f}%*",
         "",
         "📌 *Por Tema/Subtema (top 20 por volume):*",
+        "",
     ]
 
     breakdown = get_topic_breakdown(user_id, limit=20)
     if not breakdown:
         linhas.append("—")
-    else:
-        for r in breakdown:
+        await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
+        return
+
+    # ===== agrupar por tema =====
+    grouped = {}
+    order_tema = []  # preserva ordem de aparição (já vem por total desc)
+    for r in breakdown:
+        tema = (r.get("tema") or "—").strip() or "—"
+        if tema not in grouped:
+            grouped[tema] = []
+            order_tema.append(tema)
+        grouped[tema].append(r)
+
+    # ===== imprimir com somatório por TEMA e sublinhas por SUBTEMA =====
+    for tema in order_tema:
+        items = grouped.get(tema, [])
+
+        t_total = sum(int(x.get("total") or 0) for x in items)
+        t_acertos = sum(int(x.get("acertos") or 0) for x in items)
+        t_erros = sum(int(x.get("erros") or 0) for x in items)
+        t_pct = (t_acertos / t_total * 100.0) if t_total else 0.0
+
+        # Linha do TEMA (somatório do que aparece no top20)
+        linhas.append(
+            f"*{tema}* (*{t_pct:.1f}%*) — *{t_acertos}/{t_total}* (✅{t_acertos}/❌{t_erros})"
+        )
+
+        # Subtemas do tema (mantém a ordem do breakdown)
+        for r in items:
+            sub = (r.get("subtema") or "—").strip() or "—"
             linhas.append(
-                f"• *{r['tema']}* / _{r['subtema']}_ → "
-                f"{r['total']} (✅{r['acertos']} ❌{r['erros']}) | *{r['pct']:.1f}%*"
+                f"↳ _{sub}_ (*{r['pct']:.1f}%*) — {r['acertos']}/{r['total']} (✅{r['acertos']}/❌{r['erros']})"
             )
 
-    await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
+        linhas.append("")  # espaçamento entre temas
+
+    await update.message.reply_text("\n".join(linhas).rstrip(), parse_mode="Markdown")
 
 
 async def score(update, context):
