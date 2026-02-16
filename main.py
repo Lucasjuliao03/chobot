@@ -1,9 +1,11 @@
 import os
+import asyncio
+import json
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, Update
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
-# ✅ NOVO: para criar rotas HTTP 200 (/ e /health) no mesmo servidor do webhook (PTB 20.8 usa custom_routes)
 from aiohttp import web
 
 from db_turso import (
@@ -224,7 +226,7 @@ async def score(update, context):
 async def zerar(update, context):
     user_id = str(update.effective_user.id)
 
-    teclado = InlineKeyboardMarkup([[  # noqa
+    teclado = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Confirmar zerar", callback_data=f"RST|YES|{user_id}"),
         InlineKeyboardButton("❌ Cancelar", callback_data=f"RST|NO|{user_id}"),
     ]])
@@ -342,42 +344,73 @@ async def callback_handler(update, context):
         return
 
 
-def main():
+async def _run():
     init_db()
 
-    app = (
+    application = (
         Application.builder()
         .token(TOKEN)
         .post_init(setup_commands)
         .build()
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("progresso", progresso))
-    app.add_handler(CommandHandler("score", score))
-    app.add_handler(CommandHandler("zerar", zerar))
-    app.add_handler(CallbackQueryHandler(callback_handler))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("progresso", progresso))
+    application.add_handler(CommandHandler("score", score))
+    application.add_handler(CommandHandler("zerar", zerar))
+    application.add_handler(CallbackQueryHandler(callback_handler))
 
-    # ✅ NOVO: rotas HTTP 200 para monitoramento externo (HetrixTools/UptimeRobot)
+    # Inicializa e inicia o PTB
+    await application.initialize()
+    await application.start()
+
+    # Registra webhook no Telegram
+    full_webhook = f"{WEBHOOK_URL}{WEBHOOK_PATH}"
+    await application.bot.set_webhook(url=full_webhook, drop_pending_updates=True)
+
+    # ===== Servidor HTTP (aiohttp) =====
+    aio = web.Application()
+
     async def root(_request):
         return web.Response(text="OK", status=200)
 
     async def health(_request):
         return web.json_response({"ok": True, "service": "chobot"}, status=200)
 
-    custom_routes = [
-        web.get("/", root),
-        web.get("/health", health),
-    ]
+    async def telegram_webhook(request: web.Request):
+        # Telegram envia JSON
+        try:
+            data = await request.json()
+        except Exception:
+            return web.Response(text="invalid json", status=400)
 
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=WEBHOOK_PATH.lstrip("/"),
-        webhook_url=f"{WEBHOOK_URL}{WEBHOOK_PATH}",
-        drop_pending_updates=True,
-        custom_routes=custom_routes,  # ✅ compatível com PTB 20.8
-    )
+        update = Update.de_json(data, application.bot)
+        # Joga na fila do PTB (processamento assíncrono padrão)
+        await application.update_queue.put(update)
+        return web.Response(text="ok", status=200)
+
+    aio.router.add_get("/", root)
+    aio.router.add_get("/health", health)
+    aio.router.add_post(WEBHOOK_PATH, telegram_webhook)
+
+    runner = web.AppRunner(aio)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    await site.start()
+
+    # Mantém rodando
+    stop_event = asyncio.Event()
+    try:
+        await stop_event.wait()
+    finally:
+        # Shutdown limpo
+        await runner.cleanup()
+        await application.stop()
+        await application.shutdown()
+
+
+def main():
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":
