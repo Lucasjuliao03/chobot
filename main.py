@@ -3,6 +3,9 @@ from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
+# ✅ NOVO: para criar rotas HTTP 200 (/ e /health) no mesmo servidor do webhook
+from aiohttp import web
+
 from db_turso import (
     init_db,
     record_answer,
@@ -355,12 +358,25 @@ def main():
     app.add_handler(CommandHandler("zerar", zerar))
     app.add_handler(CallbackQueryHandler(callback_handler))
 
+    # ✅ NOVO: cria um web_app com rotas 200 para monitoramento (HetrixTools/UptimeRobot)
+    web_app = web.Application()
+
+    async def root(_request):
+        return web.Response(text="OK", status=200)
+
+    async def health(_request):
+        return web.json_response({"ok": True, "service": "chobot"}, status=200)
+
+    web_app.router.add_get("/", root)
+    web_app.router.add_get("/health", health)
+
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=WEBHOOK_PATH.lstrip("/"),
         webhook_url=f"{WEBHOOK_URL}{WEBHOOK_PATH}",
         drop_pending_updates=True,
+        web_app=web_app,  # ✅ NOVO: injeta as rotas / e /health
     )
 
 
