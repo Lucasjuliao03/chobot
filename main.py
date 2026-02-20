@@ -278,7 +278,8 @@ async def score(update, context):
                     f"{r['total']} (✅{r['acertos']} ❌{r['erros']}) | *{r['pct']:.1f}%*"
                 )
 
-        await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
+        await update.message.reply_text("
+".join(linhas), parse_mode="Markdown")
         return
 
     # lista geral: /score
@@ -293,7 +294,21 @@ async def score(update, context):
 
     if not scores:
         linhas.append("— sem dados ainda —")
-        await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
+        await update.message.reply_text("
+".join(linhas), parse_mode="Markdown")
+        return
+
+    # monta ranking
+    for i, s in enumerate(scores, start=1):
+        uid = s["user_id"]
+        total = s["total"]
+        ac = s["acertos"]
+        er = s["erros"]
+        pct = s["pct"]
+        linhas.append(f"{i:02d}) `{uid}` — *{total}* (✅{ac} ❌{er}) | *{pct:.1f}%*")
+
+    await update.message.reply_text("
+".join(linhas), parse_mode="Markdown")
 
 
 
