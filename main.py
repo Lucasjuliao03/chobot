@@ -31,6 +31,15 @@ from quiz import (
     SUBTEMA_TO_QIDS,
 )
 
+
+from quiz_crs import (
+    enviar_menu_crs,
+    enviar_temas_crs,
+    iniciar_quiz_crs,
+    enviar_proxima_crs,
+    get_correct_and_explanation_crs,
+)
+
 load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
@@ -51,7 +60,7 @@ WEBHOOK_URL = WEBHOOK_URL.rstrip("/")
 async def setup_commands(app: Application):
     await app.bot.set_my_commands(
         [
-            BotCommand("start", "Iniciar o bot e escolher tema/subtema"),
+            BotCommand("start", "Iniciar e escolher Questões Geradas ou CRS"),
             BotCommand("progresso", "Ver seu progresso por tema/subtema"),
             BotCommand("score", "Ranking e detalhamento por usuário (tema/subtema)"),
             BotCommand("zerar", "Zerar suas estatísticas (com confirmação)"),
@@ -60,7 +69,23 @@ async def setup_commands(app: Application):
 
 
 async def start(update, context):
-    await enviar_temas(update, context)
+    # menu inicial: escolher banco de questões
+    teclado = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🧩 Questões Geradas", callback_data="MODE|GEN"),
+        InlineKeyboardButton("🎯 Questões CRS", callback_data="MODE|CRS"),
+    ]])
+
+    # limpa sessão anterior
+    context.chat_data.pop("quiz", None)
+    context.chat_data.pop("tema", None)
+    context.chat_data.pop("correta_exibida", None)
+    context.chat_data.pop("qid_atual", None)
+    context.chat_data.pop("perm_atual", None)
+
+    await update.message.reply_text(
+        "Escolha o banco de questões:",
+        reply_markup=teclado
+    )
 
 
 async def progresso(update, context):
@@ -277,6 +302,40 @@ async def callback_handler(update, context):
             await query.message.reply_text("🧹 Estatísticas zeradas com sucesso. Use /start para recomeçar.")
             return
 
+
+    # ===== seleção do banco de questões =====
+    if data == "MODE|GEN":
+        # Questões Geradas (fluxo atual)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await enviar_temas(update, context)
+        return
+
+    if data == "MODE|CRS":
+        # Questões CRS (novo fluxo)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await enviar_menu_crs(update, context)
+        return
+
+    # ===== menu CRS =====
+    if data == "CRS|MENU|TEMA":
+        await enviar_temas_crs(update, context)
+        return
+
+    if data == "CRS|MENU|VAR":
+        await iniciar_quiz_crs(update, context, user_id=user_id, tema=None, modo="VAR", limite=20)
+        return
+
+    if data.startswith("CRSTEMA|"):
+        tema_crs = data.split("|", 1)[1]
+        await iniciar_quiz_crs(update, context, user_id=user_id, tema=tema_crs, modo="TEMA", limite=20)
+        return
+
     # ===== fluxo normal =====
     if data.startswith("TEMA|"):
         tema = data.split("|", 1)[1]
@@ -305,14 +364,20 @@ async def callback_handler(update, context):
         if not correta_exibida:
             correta_exibida = str(context.chat_data.get("correta_exibida", "")).strip().upper()
 
-        correta_original, explicacao = get_correct_and_explanation(qid)
+        sess = context.chat_data.get("quiz", {}) or {}
+        source = str(sess.get("source") or "GEN").upper()
+
+        if source == "CRS":
+            correta_original, explicacao = get_correct_and_explanation_crs(qid)
+        else:
+            correta_original, explicacao = get_correct_and_explanation(qid)
+
 
         if correta_exibida:
             acertou = (marcada == correta_exibida)
         else:
             acertou = (marcada == correta_original)
 
-        sess = context.chat_data.get("quiz", {})
         tema = sess.get("tema", "")
         subtema = sess.get("subtema", "")
 
@@ -340,7 +405,12 @@ async def callback_handler(update, context):
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
-        await enviar_proxima(update, context)
+        sess = context.chat_data.get("quiz", {}) or {}
+        if str(sess.get("source") or "").upper() == "CRS":
+            await enviar_proxima_crs(update, context)
+        else:
+            await enviar_proxima(update, context)
+
         return
 
 
