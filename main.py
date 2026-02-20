@@ -226,8 +226,7 @@ async def progresso_crs(update, context):
             else:
                 linhas.append(f"• *{tema}*: *{resp}*  (✅{a} / ❌{e} — *{pct:.1f}%*)")
 
-    await update.effective_chat.send_message("
-".join(linhas), parse_mode="Markdown")
+    await update.effective_chat.send_message("\n".join(linhas), parse_mode="Markdown")
 
 
 async def score(update, context):
