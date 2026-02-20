@@ -299,7 +299,7 @@ async def score(update, context):
     # monta ranking
     for i, s in enumerate(scores, start=1):
         uid = s["user_id"]
-        total = s["total"]
+        total = s["respondidas"]
         ac = s["acertos"]
         er = s["erros"]
         pct = s["pct"]
