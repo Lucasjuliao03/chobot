@@ -175,10 +175,10 @@ def _apply_perm(q: dict, perm: list[str], correta_original: str):
 # UI CRS
 # ==========================================================
 async def enviar_menu_crs(update, context):
-    keyboard = [[
-        InlineKeyboardButton("📌 Selecionar Tema", callback_data="CRS|MENU|TEMA"),
-        InlineKeyboardButton("🎲 Variadas", callback_data="CRS|MENU|VAR"),
-    ]]
+    keyboard = [
+        [InlineKeyboardButton("📌 Selecionar Tema", callback_data="CRS|MENU|TEMA")],
+        [InlineKeyboardButton("🎲 Variadas", callback_data="CRS|MENU|VAR")],
+    ]
     # pode ser chamado por /start ou callback; padroniza o chat
     await update.effective_chat.send_message(
         "🧭 *Questões CRS*\n\nEscolha o modo:",

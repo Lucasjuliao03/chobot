@@ -73,10 +73,10 @@ async def setup_commands(app: Application):
 
 async def start(update, context):
     # menu inicial: escolher banco de questões
-    teclado = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🧩 Questões Geradas", callback_data="MODE|GEN"),
-        InlineKeyboardButton("🎯 Questões CRS", callback_data="MODE|CRS"),
-    ]])
+    teclado = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🧩 Questões Geradas", callback_data="MODE|GEN")],
+        [InlineKeyboardButton("🎯 Questões CRS", callback_data="MODE|CRS")],
+    ])
 
     # limpa sessão anterior
     context.chat_data.pop("quiz", None)
@@ -278,8 +278,7 @@ async def score(update, context):
                     f"{r['total']} (✅{r['acertos']} ❌{r['erros']}) | *{r['pct']:.1f}%*"
                 )
 
-        await update.message.reply_text("
-".join(linhas), parse_mode="Markdown")
+        await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
         return
 
     # lista geral: /score
@@ -294,8 +293,7 @@ async def score(update, context):
 
     if not scores:
         linhas.append("— sem dados ainda —")
-        await update.message.reply_text("
-".join(linhas), parse_mode="Markdown")
+        await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
         return
 
     # monta ranking
@@ -307,8 +305,7 @@ async def score(update, context):
         pct = s["pct"]
         linhas.append(f"{i:02d}) `{uid}` — *{total}* (✅{ac} ❌{er}) | *{pct:.1f}%*")
 
-    await update.message.reply_text("
-".join(linhas), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
 
 
 
