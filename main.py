@@ -38,6 +38,7 @@ from quiz_crs import (
     iniciar_quiz_crs,
     enviar_proxima_crs,
     get_correct_and_explanation_crs,
+    TEMA_TO_QIDS_CRS,
 )
 
 load_dotenv()
@@ -172,6 +173,61 @@ async def progresso(update, context):
         linhas.append("")
 
     await update.message.reply_text("\n".join(linhas).rstrip(), parse_mode="Markdown")
+
+
+
+async def progresso_crs(update, context):
+    """Progresso exclusivo do módulo CRS (não mistura com Geradas)."""
+    user_id = str(update.effective_user.id)
+
+    geral = get_overall_progress(user_id, source="CRS")
+    total_respondidas_geral = geral["acertos"] + geral["erros"]
+
+    linhas = [
+        "📊 *Progresso Geral (CRS)*",
+        "",
+        f"Respondidas: *{total_respondidas_geral}*",
+        f"✅ Acertos: *{geral['acertos']}*",
+        f"❌ Erros: *{geral['erros']}*",
+        f"🎯 Aproveitamento: *{geral['pct']:.1f}%*",
+        "",
+        "📌 *Por Tema (top 20 por volume):*",
+        "",
+    ]
+
+    breakdown = get_topic_breakdown(user_id, limit=20, source="CRS")
+    if not breakdown:
+        linhas.append("—")
+    else:
+        # agrupa por TEMA somando subtemas
+        agg = {}
+        for row in breakdown:
+            tema = (row.get("tema") or "").strip() or "—"
+            a = int(row.get("acertos") or 0)
+            e = int(row.get("erros") or 0)
+            t = a + e
+            if tema not in agg:
+                agg[tema] = {"acertos": 0, "erros": 0, "total": 0}
+            agg[tema]["acertos"] += a
+            agg[tema]["erros"] += e
+            agg[tema]["total"] += t
+
+        # ordena por volume respondido
+        items = sorted(agg.items(), key=lambda kv: kv[1]["total"], reverse=True)[:20]
+        for tema, d in items:
+            total_banco = len(TEMA_TO_QIDS_CRS.get(tema, [])) if tema in TEMA_TO_QIDS_CRS else 0
+            resp = d["total"]
+            a = d["acertos"]
+            e = d["erros"]
+            pct = (a / resp * 100.0) if resp else 0.0
+
+            if total_banco > 0:
+                linhas.append(f"• *{tema}*: *{resp}/{total_banco}*  (✅{a} / ❌{e} — *{pct:.1f}%*)")
+            else:
+                linhas.append(f"• *{tema}*: *{resp}*  (✅{a} / ❌{e} — *{pct:.1f}%*)")
+
+    await update.effective_chat.send_message("
+".join(linhas), parse_mode="Markdown")
 
 
 async def score(update, context):
