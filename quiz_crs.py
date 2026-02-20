@@ -107,7 +107,7 @@ def get_correct_and_explanation_crs(qid: str) -> tuple[str, str]:
 # Progresso (ícones) no menu de temas CRS
 # ==========================================================
 def _subset_status_map(user_id: str, qids: list[str]) -> dict:
-    all_map = get_question_status_map(str(user_id))
+    all_map = get_question_status_map(str(user_id), source="CRS")
     qset = set(_norm_qid(x) for x in qids)
     return {qid: st for qid, st in all_map.items() if _norm_qid(qid) in qset}
 
@@ -138,7 +138,7 @@ LETRAS = ["A", "B", "C", "D"]
 
 def _make_perm_no_repeat(user_id: str, qid: str) -> list[str]:
     qid = _norm_qid(qid)
-    last_perm = get_last_perm_for_user_question(str(user_id), str(qid).strip())
+    last_perm = get_last_perm_for_user_question(str(user_id), str(qid).strip(), source="CRS")
     last = [p.strip().upper() for p in last_perm.split(",")] if last_perm else []
 
     base = LETRAS[:]
@@ -331,6 +331,7 @@ async def enviar_proxima_crs(update, context):
     try:
         record_sent_question(
             user_id=user_id,
+            source="CRS",
             qid=qid,
             message_id=msg.message_id,
             correta_exibida=correta_exibida,

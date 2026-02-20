@@ -93,7 +93,7 @@ def _subset_status_map(user_id: str, qids: list[str]) -> dict:
     get_question_status_map(user_id) retorna status global: {qid: True/False}
     Aqui filtramos apenas as questões do tema/subtema.
     """
-    all_map = get_question_status_map(str(user_id))
+    all_map = get_question_status_map(str(user_id), source="GEN")
     # ✅ AJUSTE NECESSÁRIO: normaliza qids do filtro
     qset = set(_norm_qid(x) for x in qids)
     return {qid: st for qid, st in all_map.items() if _norm_qid(qid) in qset}
@@ -142,7 +142,7 @@ def _make_perm_no_repeat(user_id: str, qid: str) -> list[str]:
     # ✅ AJUSTE NECESSÁRIO: normaliza qid para bater com o Turso
     qid = _norm_qid(qid)
 
-    last_perm = get_last_perm_for_user_question(str(user_id), str(qid).strip())
+    last_perm = get_last_perm_for_user_question(str(user_id), str(qid).strip(), source="GEN")
     last = [p.strip().upper() for p in last_perm.split(",")] if last_perm else []
 
     base = LETRAS[:]  # ["A","B","C","D"]
@@ -187,6 +187,7 @@ def _apply_perm(q: dict, perm: list[str], correta_original: str):
 # =========================
 # UI: temas / subtemas
 # =========================
+
 async def enviar_temas(update, context):
     user_id = str(update.effective_user.id)
 
@@ -201,11 +202,22 @@ async def enviar_temas(update, context):
         label = f"{tema}  |  {icon} {acertos}/{total}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"TEMA|{tema}")])
 
-    await update.message.reply_text(
-        "📚 *Escolha o TEMA:*",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
+    texto = "📚 *Escolha o TEMA:*"
+    markup = InlineKeyboardMarkup(keyboard)
+
+    # pode ser chamado por /start (mensagem) ou por callback (botão)
+    if getattr(update, "message", None):
+        await update.message.reply_text(
+            texto,
+            reply_markup=markup,
+            parse_mode="Markdown",
+        )
+    else:
+        await update.effective_chat.send_message(
+            texto,
+            reply_markup=markup,
+            parse_mode="Markdown",
+        )
 
 
 async def enviar_subtemas(update, context, tema: str):
@@ -248,7 +260,7 @@ async def iniciar_quiz(update, context, user_id: str, tema: str, subtema: str, l
     base["ID"] = base["ID"].apply(_norm_qid)
     qids = base["ID"].tolist()
 
-    all_status = get_question_status_map(str(user_id))
+    all_status = get_question_status_map(str(user_id), source="GEN")
 
     nao_resp, erradas, acertadas = [], [], []
     for qid in qids:
@@ -339,6 +351,7 @@ async def enviar_proxima(update, context):
     try:
         record_sent_question(
             user_id=user_id,
+            source="GEN",
             qid=qid,  # ✅ já normalizado
             message_id=msg.message_id,
             correta_exibida=correta_exibida,

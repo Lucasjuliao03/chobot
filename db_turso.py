@@ -89,7 +89,8 @@ def init_db():
         marcada TEXT,
         tema TEXT,
         subtema TEXT,
-        timestamp TEXT
+        timestamp TEXT,
+        source TEXT DEFAULT 'GEN'
     )
     """)
 
@@ -97,6 +98,18 @@ def init_db():
     _exec("CREATE INDEX IF NOT EXISTS idx_respostas_user_qid ON respostas(user_id, qid)")
     _exec("CREATE INDEX IF NOT EXISTS idx_respostas_tema_sub ON respostas(tema, subtema)")
     _exec("CREATE INDEX IF NOT EXISTS idx_respostas_qid ON respostas(qid)")
+
+    # Migração: adiciona coluna source em respostas se não existir
+    try:
+        _exec("ALTER TABLE respostas ADD COLUMN source TEXT DEFAULT 'GEN'")
+    except Exception:
+        pass
+    # Normaliza valores antigos
+    try:
+        _exec("UPDATE respostas SET source='GEN' WHERE source IS NULL OR TRIM(source)=''")
+    except Exception:
+        pass
+
 
     _exec("""
     CREATE TABLE IF NOT EXISTS sent (
@@ -106,26 +119,38 @@ def init_db():
         message_id INTEGER NOT NULL,
         correta_exibida TEXT,
         perm TEXT,
-        timestamp TEXT
+        timestamp TEXT,
+        source TEXT DEFAULT 'GEN'
     )
     """)
 
     _exec("CREATE INDEX IF NOT EXISTS idx_sent_user_qid_mid ON sent(user_id, qid, message_id)")
     _exec("CREATE INDEX IF NOT EXISTS idx_sent_user_qid ON sent(user_id, qid)")
 
+    # Migração: adiciona coluna source em sent se não existir
+    try:
+        _exec("ALTER TABLE sent ADD COLUMN source TEXT DEFAULT 'GEN'")
+    except Exception:
+        pass
+    try:
+        _exec("UPDATE sent SET source='GEN' WHERE source IS NULL OR TRIM(source)=''")
+    except Exception:
+        pass
 
-def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str, subtema: str):
+
+
+def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str, subtema: str, source: str = 'GEN'):
     ts = _utc_now_iso()
     _exec(
         """
-        INSERT INTO respostas (user_id, qid, acertou, marcada, tema, subtema, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO respostas (user_id, qid, acertou, marcada, tema, subtema, timestamp, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (str(user_id), _norm_qid(qid), 1 if acertou else 0, str(marcada), str(tema or ""), str(subtema or ""), ts),
+        (str(user_id), _norm_qid(qid), 1 if acertou else 0, str(marcada), str(tema or ""), str(subtema or ""), ts, str(source or 'GEN').upper()),
     )
 
 
-def get_overall_progress(user_id: str):
+def get_overall_progress(user_id: str, source: str = 'GEN'):
     uid = str(user_id)
 
     row = _fetchone(
@@ -135,9 +160,9 @@ def get_overall_progress(user_id: str):
             COUNT(*) - COALESCE(SUM(acertou), 0) AS erros,
             COUNT(*) AS total
         FROM respostas
-        WHERE user_id = ?
+        WHERE user_id = ? AND source = ?
         """,
-        (uid,),
+        (uid, str(source or 'GEN').upper()),
     )
 
     acertos = int(row[0] or 0)
@@ -147,7 +172,7 @@ def get_overall_progress(user_id: str):
     return {"acertos": acertos, "erros": erros, "pct": pct}
 
 
-def get_topic_breakdown(user_id: str, limit: int = 20):
+def get_topic_breakdown(user_id: str, limit: int = 20, source: str = 'GEN'):
     uid = str(user_id)
     lim = max(0, int(limit))
 
@@ -160,12 +185,12 @@ def get_topic_breakdown(user_id: str, limit: int = 20):
             COUNT(*) - COALESCE(SUM(acertou), 0) AS erros,
             COUNT(*) AS total
         FROM respostas
-        WHERE user_id = ?
+        WHERE user_id = ? AND source = ?
         GROUP BY tema, subtema
         ORDER BY total DESC
         LIMIT ?
         """,
-        (uid, lim),
+        (uid, str(source or 'GEN').upper(), lim),
     )
 
     out = []
@@ -187,7 +212,7 @@ def get_topic_breakdown(user_id: str, limit: int = 20):
     return out
 
 
-def get_question_status_map(user_id: str):
+def get_question_status_map(user_id: str, source: str = 'GEN'):
     """
     Regra mantida:
       - True  => acertou ao menos uma vez na questão
@@ -200,10 +225,10 @@ def get_question_status_map(user_id: str):
         """
         SELECT qid, MAX(acertou) AS ok
         FROM respostas
-        WHERE user_id = ?
+        WHERE user_id = ? AND source = ?
         GROUP BY qid
         """,
-        (uid,),
+        (uid, str(source or 'GEN').upper()),
     )
 
     status = {}
@@ -221,15 +246,16 @@ def reset_user_stats(user_id: str):
     _exec("DELETE FROM sent WHERE user_id = ?", (uid,))
 
 
-def record_sent_question(user_id: str, qid: str, message_id: int, correta_exibida: str, perm: str):
+def record_sent_question(user_id: str, source: str, qid: str, message_id: int, correta_exibida: str, perm: str):
     ts = _utc_now_iso()
     _exec(
         """
-        INSERT INTO sent (user_id, qid, message_id, correta_exibida, perm, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO sent (user_id, source, qid, message_id, correta_exibida, perm, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             str(user_id),
+            str(source or 'GEN').upper(),
             _norm_qid(qid),
             int(message_id),
             str(correta_exibida or "").strip().upper(),
@@ -239,7 +265,7 @@ def record_sent_question(user_id: str, qid: str, message_id: int, correta_exibid
     )
 
 
-def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
+def get_sent_correct(user_id: str, qid: str, message_id: int, source: str = 'GEN') -> str:
     uid = str(user_id)
     q = _norm_qid(qid)
     mid = int(message_id)
@@ -248,18 +274,18 @@ def get_sent_correct(user_id: str, qid: str, message_id: int) -> str:
         """
         SELECT correta_exibida
         FROM sent
-        WHERE user_id = ? AND qid = ? AND message_id = ?
+        WHERE user_id = ? AND source = ? AND qid = ? AND message_id = ?
         ORDER BY id DESC
         LIMIT 1
         """,
-        (uid, q, mid),
+        (uid, str(source or 'GEN').upper(), q, mid),
     )
     if not row:
         return ""
     return str(row[0] or "").strip().upper()
 
 
-def get_last_perm_for_user_question(user_id: str, qid: str) -> str:
+def get_last_perm_for_user_question(user_id: str, qid: str, source: str = 'GEN') -> str:
     uid = str(user_id)
     q = _norm_qid(qid)
 
@@ -267,18 +293,18 @@ def get_last_perm_for_user_question(user_id: str, qid: str) -> str:
         """
         SELECT perm
         FROM sent
-        WHERE user_id = ? AND qid = ?
+        WHERE user_id = ? AND source = ? AND qid = ?
         ORDER BY id DESC
         LIMIT 1
         """,
-        (uid, q),
+        (uid, str(source or 'GEN').upper(), q),
     )
     if not row:
         return ""
     return str(row[0] or "").strip()
 
 
-def get_users_overall_scores(limit: int | None = None):
+def get_users_overall_scores(limit: int | None = None, source: str = 'GEN'):
     """
     Retorna lista:
       [{"user_id": "...", "respondidas": N, "acertos": A, "erros": E, "pct": P}, ...]
@@ -293,10 +319,11 @@ def get_users_overall_scores(limit: int | None = None):
                 COALESCE(SUM(acertou), 0) AS acertos,
                 COUNT(*) - COALESCE(SUM(acertou), 0) AS erros
             FROM respostas
+            WHERE source = ?
             GROUP BY user_id
             ORDER BY respondidas DESC
             """
-        )
+        , (str(source or 'GEN').upper(),))
     else:
         lim = max(1, int(limit))
         rows = _fetchall(
@@ -307,11 +334,12 @@ def get_users_overall_scores(limit: int | None = None):
                 COALESCE(SUM(acertou), 0) AS acertos,
                 COUNT(*) - COALESCE(SUM(acertou), 0) AS erros
             FROM respostas
+            WHERE source = ?
             GROUP BY user_id
             ORDER BY respondidas DESC
             LIMIT ?
             """,
-            (lim,),
+            (str(source or 'GEN').upper(), lim),
         )
 
     out = []
@@ -332,7 +360,7 @@ def get_users_overall_scores(limit: int | None = None):
     return out
 
 
-def get_user_topic_breakdown_full(user_id: str):
+def get_user_topic_breakdown_full(user_id: str, source: str = 'GEN'):
     """
     Retorna um 'blob' com:
       - temas: agregação por TEMA
@@ -356,11 +384,11 @@ def get_user_topic_breakdown_full(user_id: str):
             COUNT(*) - COALESCE(SUM(acertou), 0) AS erros,
             COUNT(*) AS total
         FROM respostas
-        WHERE user_id = ?
+        WHERE user_id = ? AND source = ?
         GROUP BY tema
         ORDER BY total DESC
         """,
-        (uid,),
+        (uid, str(source or 'GEN').upper()),
     )
 
     temas = []
@@ -389,11 +417,11 @@ def get_user_topic_breakdown_full(user_id: str):
             COUNT(*) - COALESCE(SUM(acertou), 0) AS erros,
             COUNT(*) AS total
         FROM respostas
-        WHERE user_id = ?
+        WHERE user_id = ? AND source = ?
         GROUP BY tema, subtema
         ORDER BY total DESC
         """,
-        (uid,),
+        (uid, str(source or 'GEN').upper()),
     )
 
     tema_subtema = []

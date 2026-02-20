@@ -61,8 +61,10 @@ async def setup_commands(app: Application):
     await app.bot.set_my_commands(
         [
             BotCommand("start", "Iniciar e escolher Questões Geradas ou CRS"),
-            BotCommand("progresso", "Ver seu progresso por tema/subtema"),
-            BotCommand("score", "Ranking e detalhamento por usuário (tema/subtema)"),
+            BotCommand("progresso", "Ver seu progresso (Questões Geradas)"),
+            BotCommand("progresso_crs", "Ver seu progresso (Questões CRS)"),
+            BotCommand("score", "Ranking/Detalhamento (Questões Geradas)"),
+            BotCommand("score_crs", "Ranking/Detalhamento (Questões CRS)"),
             BotCommand("zerar", "Zerar suas estatísticas (com confirmação)"),
         ]
     )
@@ -98,7 +100,7 @@ async def progresso(update, context):
     - Agrupamento por TEMA mantido.
     """
     user_id = str(update.effective_user.id)
-    geral = get_overall_progress(user_id)
+    geral = get_overall_progress(user_id, source="GEN")
     total_respondidas_geral = geral["acertos"] + geral["erros"]
 
     linhas = [
@@ -113,7 +115,7 @@ async def progresso(update, context):
         "",
     ]
 
-    breakdown = get_topic_breakdown(user_id, limit=20)
+    breakdown = get_topic_breakdown(user_id, limit=20, source="GEN")
     if not breakdown:
         linhas.append("—")
         await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
@@ -183,10 +185,10 @@ async def score(update, context):
     # detalhe: /score <user_id>
     if args:
         uid = str(args[0]).strip()
-        geral = get_overall_progress(uid)
+        geral = get_overall_progress(uid, source="GEN")
         total = geral["acertos"] + geral["erros"]
 
-        blob = get_user_topic_breakdown_full(uid)
+        blob = get_user_topic_breakdown_full(uid, source="GEN")
         temas = blob["temas"]
         tema_sub = blob["tema_subtema"]
 
@@ -225,7 +227,7 @@ async def score(update, context):
         return
 
     # lista geral: /score
-    scores = get_users_overall_scores(limit=20)
+    scores = get_users_overall_scores(limit=20, source="GEN")
 
     linhas = [
         "🏆 *SCORE (Top 20 por respondidas)*",
@@ -237,13 +239,68 @@ async def score(update, context):
     if not scores:
         linhas.append("— sem dados ainda —")
         await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
+
+
+
+async def score_crs(update, context):
+    args = getattr(context, "args", []) or []
+
+    if args:
+        uid = str(args[0]).strip()
+        geral = get_overall_progress(uid, source="CRS")
+        total = geral["acertos"] + geral["erros"]
+        blob = get_user_topic_breakdown_full(uid, source="CRS")
+        temas = blob["temas"]
+        tema_sub = blob["tema_subtema"]
+
+        linhas = [
+            f"👤 *SCORE CRS do usuário:* `{uid}`",
+            "",
+            f"Respondidas: *{total}*",
+            f"✅ Acertos: *{geral['acertos']}*",
+            f"❌ Erros: *{geral['erros']}*",
+            f"🎯 Aproveitamento: *{geral['pct']:.1f}%*",
+            "",
+            "📌 *Por TEMA (top 15 por volume):*",
+        ]
+
+        if not temas:
+            linhas.append("—")
+        else:
+            for t in temas[:15]:
+                linhas.append(f"• *{t['tema'] or '—'}* → {t['total']} (✅{t['acertos']} ❌{t['erros']}) | *{t['pct']:.1f}%*")
+
+        linhas.append("")
+        linhas.append("📌 *Por TEMA / SUBTEMA (top 30 por volume):*")
+        linhas.append("")
+
+        if not tema_sub:
+            linhas.append("—")
+        else:
+            for r in tema_sub[:30]:
+                linhas.append(
+                    f"• *{r['tema'] or '—'}* / _{r['subtema'] or '—'}_ → {r['total']} (✅{r['acertos']} ❌{r['erros']}) | *{r['pct']:.1f}%*"
+                )
+
+        await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
+        return
+
+    scores = get_users_overall_scores(limit=20, source="CRS")
+
+    linhas = [
+        "🏆 *SCORE CRS (Top 20 por respondidas)*",
+        "",
+        "_Use_ `/score_crs <user_id>` _para ver por TEMA e SUBTEMA._",
+        "",
+    ]
+
+    if not scores:
+        linhas.append("— sem dados ainda —")
+        await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
         return
 
     for i, s in enumerate(scores, start=1):
-        linhas.append(
-            f"{i:02d}. `{s['user_id']}` → *{s['respondidas']}* "
-            f"(✅{s['acertos']} ❌{s['erros']}) | *{s['pct']:.1f}%*"
-        )
+        linhas.append(f"{i:02d}. `{s['user_id']}` → *{s['respondidas']}* (✅{s['acertos']} ❌{s['erros']}) | *{s['pct']:.1f}%*")
 
     await update.message.reply_text("\n".join(linhas), parse_mode="Markdown")
 
@@ -353,19 +410,19 @@ async def callback_handler(update, context):
         _, qid_raw, marcada = data.split("|", 2)
         qid = str(qid_raw).strip()
 
+        sess = context.chat_data.get("quiz", {}) or {}
+        source = str(sess.get("source") or "GEN").upper()
+
         message_id = getattr(query.message, "message_id", None)
         correta_exibida = ""
         if message_id is not None:
             try:
-                correta_exibida = get_sent_correct(user_id, qid, message_id)
+                correta_exibida = get_sent_correct(user_id, qid, message_id, source=source)
             except Exception:
                 correta_exibida = ""
 
         if not correta_exibida:
             correta_exibida = str(context.chat_data.get("correta_exibida", "")).strip().upper()
-
-        sess = context.chat_data.get("quiz", {}) or {}
-        source = str(sess.get("source") or "GEN").upper()
 
         if source == "CRS":
             correta_original, explicacao = get_correct_and_explanation_crs(qid)
@@ -381,7 +438,7 @@ async def callback_handler(update, context):
         tema = sess.get("tema", "")
         subtema = sess.get("subtema", "")
 
-        record_answer(user_id, qid, acertou, marcada, tema, subtema)
+        record_answer(user_id, qid, acertou, marcada, tema, subtema, source=source)
 
         try:
             await query.edit_message_reply_markup(reply_markup=None)
@@ -426,7 +483,9 @@ async def _run():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("progresso", progresso))
+    application.add_handler(CommandHandler("progresso_crs", progresso_crs))
     application.add_handler(CommandHandler("score", score))
+    application.add_handler(CommandHandler("score_crs", score_crs))
     application.add_handler(CommandHandler("zerar", zerar))
     application.add_handler(CallbackQueryHandler(callback_handler))
 
