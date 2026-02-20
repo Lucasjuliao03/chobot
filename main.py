@@ -74,8 +74,8 @@ async def setup_commands(app: Application):
 async def start(update, context):
     # menu inicial: escolher banco de questões
     teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧩 Questões Geradas", callback_data="MODE|GEN")],
-        [InlineKeyboardButton("🎯 Questões CRS", callback_data="MODE|CRS")],
+        [InlineKeyboardButton("🧩 QUESTÕES GERADAS", callback_data="MODE|GEN")],
+        [InlineKeyboardButton("🎯 QUESTÕES CRS", callback_data="MODE|CRS")],
     ])
 
     # limpa sessão anterior
