@@ -35,6 +35,7 @@ from quiz import (
 from quiz_crs import (
     enviar_menu_crs,
     enviar_temas_crs,
+    enviar_subtemas_crs,
     iniciar_quiz_crs,
     enviar_proxima_crs,
     get_correct_and_explanation_crs,
@@ -74,8 +75,8 @@ async def setup_commands(app: Application):
 async def start(update, context):
     # menu inicial: escolher banco de questões
     teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧩 QUESTÕES GERADAS", callback_data="MODE|GEN")],
-        [InlineKeyboardButton("🎯 QUESTÕES CRS", callback_data="MODE|CRS")],
+        [InlineKeyboardButton("🧩 Questões Geradas", callback_data="MODE|GEN")],
+        [InlineKeyboardButton("🎯 Questões CRS", callback_data="MODE|CRS")],
     ])
 
     # limpa sessão anterior
@@ -452,12 +453,19 @@ async def callback_handler(update, context):
         return
 
     if data == "CRS|MENU|VAR":
-        await iniciar_quiz_crs(update, context, user_id=user_id, tema=None, modo="VAR", limite=20)
+        await iniciar_quiz_crs(update, context, user_id=user_id, tema=None, subtema=None, modo="VAR", limite=20)
         return
 
     if data.startswith("CRSTEMA|"):
         tema_crs = data.split("|", 1)[1]
-        await iniciar_quiz_crs(update, context, user_id=user_id, tema=tema_crs, modo="TEMA", limite=20)
+        context.chat_data["tema_crs"] = tema_crs
+        await enviar_subtemas_crs(update, context, tema_crs)
+        return
+
+    if data.startswith("CRSSUB|"):
+        sub_crs = data.split("|", 1)[1]
+        tema_crs = str(context.chat_data.get("tema_crs", "") or "").strip()
+        await iniciar_quiz_crs(update, context, user_id=user_id, tema=tema_crs, subtema=sub_crs, modo="TEMA", limite=20)
         return
 
     # ===== fluxo normal =====

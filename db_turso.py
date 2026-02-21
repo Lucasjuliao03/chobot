@@ -442,3 +442,26 @@ def get_user_topic_breakdown_full(user_id: str, source: str = 'GEN'):
         )
 
     return {"temas": temas, "tema_subtema": tema_subtema}
+
+
+def get_last_answered_map(user_id: str, source: str = 'GEN'):
+    """
+    Retorna {qid: ultimo_timestamp_iso} com base na tabela respostas.
+    Usado para priorizar revisão das mais antigas.
+    """
+    uid = str(user_id)
+    rows = _fetchall(
+        """
+        SELECT qid, MAX(COALESCE(timestamp, '')) AS ts
+        FROM respostas
+        WHERE user_id = ? AND source = ?
+        GROUP BY qid
+        """,
+        (uid, str(source or 'GEN').upper()),
+    )
+    out = {}
+    for qid, ts in rows:
+        q = _norm_qid(qid)
+        if q:
+            out[q] = str(ts or "")
+    return out

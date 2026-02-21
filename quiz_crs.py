@@ -5,13 +5,15 @@ import pandas as pd
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 # ✅ persistência (mesma do módulo atual)
-from db_turso import get_question_status_map, get_last_perm_for_user_question, record_sent_question
+from db_turso import (
+    get_question_status_map,
+    get_last_perm_for_user_question,
+    record_sent_question,
+    get_last_answered_map,
+)
 
 
 def _norm_qid(x) -> str:
-    """
-    Normaliza IDs para evitar '908.0' vs '908' etc.
-    """
     s = str(x).strip()
     if not s or s.lower() == "nan":
         return ""
@@ -42,18 +44,15 @@ def _extract_letter(value) -> str:
 df = pd.read_excel("QUESTOES PROVA CRS.xlsx")
 df.columns = df.columns.str.strip()
 
-# Campos mínimos esperados
 required = ["Tema", "Pergunta", "Opção A", "Opção B", "Opção C", "Opção D", "Resposta Correta"]
 for col in required:
     if col not in df.columns:
         raise RuntimeError(f"Coluna obrigatória '{col}' não encontrada em QUESTOES PROVA CRS.xlsx")
 
-# ID pode vir vazio (nan) no arquivo: gera sequencial se necessário
 if "ID" not in df.columns:
     df.insert(0, "ID", range(1, len(df) + 1))
 df["ID"] = df["ID"].apply(_norm_qid)
 
-# preenche vazios com sequência (mantém estável)
 mask_empty = (df["ID"] == "") | (df["ID"].isna())
 if mask_empty.any():
     start = 1
@@ -73,7 +72,6 @@ if "Subtema" in df.columns:
 else:
     df["Subtema"] = ""
 
-# Campos extras (se existirem)
 if "CURSOS" not in df.columns:
     df["CURSOS"] = ""
 if "materia" not in df.columns:
@@ -86,6 +84,16 @@ TEMA_TO_QIDS_CRS = {
     tema: df[df["Tema"] == tema]["ID"].apply(_norm_qid).tolist()
     for tema in TEMAS_CRS
 }
+TEMA_TO_SUBTEMAS_CRS = {
+    tema: sorted([s for s in df[df["Tema"] == tema]["Subtema"].dropna().astype(str).str.strip().unique().tolist() if s and s.lower() != "nan"])
+    for tema in TEMAS_CRS
+}
+SUBTEMA_TO_QIDS_CRS = {}
+for tema in TEMAS_CRS:
+    for sub in TEMA_TO_SUBTEMAS_CRS.get(tema, []):
+        SUBTEMA_TO_QIDS_CRS[(tema, sub)] = (
+            df[(df["Tema"] == tema) & (df["Subtema"] == sub)]["ID"].apply(_norm_qid).tolist()
+        )
 
 
 def get_question_by_id_crs(qid: str) -> dict | None:
@@ -103,9 +111,6 @@ def get_correct_and_explanation_crs(qid: str) -> tuple[str, str]:
     return correta, explicacao
 
 
-# ==========================================================
-# Progresso (ícones) no menu de temas CRS
-# ==========================================================
 def _subset_status_map(user_id: str, qids: list[str]) -> dict:
     all_map = get_question_status_map(str(user_id), source="CRS")
     qset = set(_norm_qid(x) for x in qids)
@@ -130,9 +135,6 @@ def _progress_icon(ok: int, total: int) -> str:
     return "⚪"
 
 
-# ==========================================================
-# Embaralhamento sem repetir (mesma regra do módulo atual)
-# ==========================================================
 LETRAS = ["A", "B", "C", "D"]
 
 
@@ -176,10 +178,9 @@ def _apply_perm(q: dict, perm: list[str], correta_original: str):
 # ==========================================================
 async def enviar_menu_crs(update, context):
     keyboard = [
-        [InlineKeyboardButton("📌 Selecionar Tema", callback_data="CRS|MENU|TEMA")],
-        [InlineKeyboardButton("🎲 Variadas", callback_data="CRS|MENU|VAR")],
+        [InlineKeyboardButton("📌 SELECIONAR TEMA", callback_data="CRS|MENU|TEMA")],
+        [InlineKeyboardButton("🎲 VARIADAS", callback_data="CRS|MENU|VAR")],
     ]
-    # pode ser chamado por /start ou callback; padroniza o chat
     await update.effective_chat.send_message(
         "🧭 *Questões CRS*\n\nEscolha o modo:",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -189,19 +190,15 @@ async def enviar_menu_crs(update, context):
 
 async def enviar_temas_crs(update, context):
     user_id = str(update.effective_user.id)
-
     keyboard = []
     for tema in TEMAS_CRS:
         qids = TEMA_TO_QIDS_CRS.get(tema, [])
         total = len(qids)
-
-        acertos, _erros = _count_acertos_erros(user_id, qids)
+        acertos, _ = _count_acertos_erros(user_id, qids)
         icon = _progress_icon(acertos, total)
-
         label = f"{tema}  |  {icon} {acertos}/{total}"
         keyboard.append([InlineKeyboardButton(label, callback_data=f"CRSTEMA|{tema}")])
 
-    # edita se veio de callback, senão manda nova
     if getattr(update, "callback_query", None):
         await update.callback_query.edit_message_text(
             "📚 *Selecione o TEMA (CRS):*",
@@ -216,40 +213,96 @@ async def enviar_temas_crs(update, context):
         )
 
 
-# ==========================================================
-# Monta sessão CRS
-# ==========================================================
-async def iniciar_quiz_crs(update, context, user_id: str, tema: str | None, modo: str, limite: int = 20):
+async def enviar_subtemas_crs(update, context, tema: str):
+    user_id = str(update.effective_user.id)
+    subs = TEMA_TO_SUBTEMAS_CRS.get(tema, [])
+    keyboard = []
+
+    if not subs:
+        # Se não houver subtema preenchido, cai direto no tema
+        await iniciar_quiz_crs(update, context, user_id=user_id, tema=tema, subtema=None, modo="TEMA", limite=20)
+        return
+
+    for sub in subs:
+        qids = SUBTEMA_TO_QIDS_CRS.get((tema, sub), [])
+        total = len(qids)
+        acertos, _ = _count_acertos_erros(user_id, qids)
+        icon = _progress_icon(acertos, total)
+        label = f"{sub}  |  {icon} {acertos}/{total}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"CRSSUB|{sub}")])
+
+    context.chat_data["tema_crs"] = tema
+    await update.callback_query.edit_message_text(
+        f"📘 *Tema CRS:* {tema}\n\n📂 Selecione o *SUBTEMA:*",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+    )
+
+
+def _priorizar_fila_crs(base_df: pd.DataFrame, user_id: str, limite: int):
+    base = base_df.copy()
+    base["ID"] = base["ID"].apply(_norm_qid)
+    qids = base["ID"].tolist()
+
+    status_map = get_question_status_map(str(user_id), source="CRS")
+    last_map = get_last_answered_map(str(user_id), source="CRS")  # qid -> iso timestamp
+
+    nao_resp_ids, erradas_ids, acertadas_ids = [], [], []
+    for qid in qids:
+        qn = _norm_qid(qid)
+        st = status_map.get(qn)
+        if st is None:
+            nao_resp_ids.append(qn)
+        elif st is False:
+            erradas_ids.append(qn)
+        else:
+            acertadas_ids.append(qn)
+
+    # 1) não respondidas aleatórias
+    nao_resp = base[base["ID"].isin(nao_resp_ids)].sample(frac=1).to_dict("records") if nao_resp_ids else []
+
+    # 2) erradas aleatórias
+    erradas = base[base["ID"].isin(erradas_ids)].sample(frac=1).to_dict("records") if erradas_ids else []
+
+    # 3) acertadas: mais antigas primeiro (quem ficou há mais tempo sem revisão)
+    acertadas_df = base[base["ID"].isin(acertadas_ids)].copy()
+    if not acertadas_df.empty:
+        acertadas_df["__last"] = acertadas_df["ID"].map(lambda x: last_map.get(_norm_qid(x), "9999"))
+        acertadas_df = acertadas_df.sort_values(by="__last", ascending=True)
+        acertadas = acertadas_df.drop(columns=["__last"]).to_dict("records")
+    else:
+        acertadas = []
+
+    return (nao_resp + erradas + acertadas)[:limite]
+
+
+async def iniciar_quiz_crs(update, context, user_id: str, tema: str | None, subtema: str | None, modo: str, limite: int = 20):
     """
     modo:
-      - "TEMA": filtra pelo tema informado
-      - "VAR": variado (embaralha o dataframe todo)
+      - "TEMA": filtra pelo tema (e opcionalmente subtema)
+      - "VAR": variado (embaralha o dataframe todo com priorização)
     """
     base = df.copy()
 
+    tema = (tema or "").strip()
+    subtema = (subtema or "").strip()
+
     if modo == "TEMA":
-        tema = (tema or "").strip()
-        base = base[base["Tema"] == tema].copy()
+        if tema:
+            base = base[base["Tema"] == tema].copy()
+        if subtema:
+            base = base[base["Subtema"] == subtema].copy()
 
     if base.empty:
         await update.effective_chat.send_message("⚠️ Sem questões para esse filtro (CRS).")
         return
 
-    base["ID"] = base["ID"].apply(_norm_qid)
+    fila_clean = _priorizar_fila_crs(base, str(user_id), limite)
 
-    # Variadas: simplesmente embaralha tudo e envia uma sessão
-    fila = base.sample(frac=1).to_dict("records")[:limite]
-
-    fila_clean = []
-    for item in fila:
-        item["ID"] = _norm_qid(item.get("ID", ""))
-        fila_clean.append(item)
-
-    # Fonte e metadados para o handler de resposta saber qual banco usar
     context.chat_data["quiz"] = {
         "user_id": str(user_id),
-        "tema": (tema or "").strip() if modo == "TEMA" else "CRS (Variadas)",
-        "subtema": "",  # CRS não usa subtema no fluxo, mas mantém compatibilidade
+        "tema": tema if tema else "CRS (Variadas)",
+        "subtema": subtema,
         "perguntas": fila_clean,
         "index": 0,
         "source": "CRS",
@@ -257,7 +310,10 @@ async def iniciar_quiz_crs(update, context, user_id: str, tema: str | None, modo
 
     header = "🎯 *Quiz CRS iniciado*"
     if modo == "TEMA":
-        header += f"\n📌 Tema: *{tema}*"
+        if tema:
+            header += f"\n📌 Tema: *{tema}*"
+        if subtema:
+            header += f"\n📂 Subtema: *{subtema}*"
     else:
         header += "\n🎲 *Modo:* Variadas"
 
@@ -281,7 +337,6 @@ async def enviar_proxima_crs(update, context):
     user_id = str(quiz.get("user_id") or "")
 
     correta_original, _exp = get_correct_and_explanation_crs(qid)
-
     perm = _make_perm_no_repeat(user_id, qid)
     alternativas_exibidas, correta_exibida = _apply_perm(q, perm, correta_original)
 
@@ -299,13 +354,12 @@ async def enviar_proxima_crs(update, context):
         cabecalho.append(f"🎓 *Curso:* {curso}")
     if materia:
         cabecalho.append(f"📚 *Matéria:* {materia}")
-    if tema_row:
+    if tema_row and tema_row.lower() != "nan":
         cabecalho.append(f"📘 *Tema:* {tema_row}")
     if subtema_row and subtema_row.lower() != "nan":
         cabecalho.append(f"📂 *Subtema:* {subtema_row}")
 
     cab = "\n".join(cabecalho).strip()
-
     texto = (
         f"{cab}\n\n"
         f"*{q.get('Pergunta','')}*\n\n"
@@ -339,3 +393,4 @@ async def enviar_proxima_crs(update, context):
         )
     except Exception:
         pass
+
