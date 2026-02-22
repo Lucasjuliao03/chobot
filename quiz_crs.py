@@ -178,8 +178,8 @@ def _apply_perm(q: dict, perm: list[str], correta_original: str):
 # ==========================================================
 async def enviar_menu_crs(update, context):
     keyboard = [
-        [InlineKeyboardButton("📌 SELECIONAR TEMA", callback_data="CRS|MENU|TEMA")],
-        [InlineKeyboardButton("🎲 VARIADAS", callback_data="CRS|MENU|VAR")],
+        [InlineKeyboardButton("📌 Selecionar Tema", callback_data="CRS|MENU|TEMA")],
+        [InlineKeyboardButton("🎲 Variadas", callback_data="CRS|MENU|VAR")],
     ]
     await update.effective_chat.send_message(
         "🧭 *Questões CRS*\n\nEscolha o modo:",
@@ -229,7 +229,7 @@ async def enviar_subtemas_crs(update, context, tema: str):
         acertos, _ = _count_acertos_erros(user_id, qids)
         icon = _progress_icon(acertos, total)
         label = f"{sub}  |  {icon} {acertos}/{total}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"CRSSUB|{sub}")])
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"CRSSUB|{tema}|{sub}")])
 
     context.chat_data["tema_crs"] = tema
     await update.callback_query.edit_message_text(
@@ -393,4 +393,3 @@ async def enviar_proxima_crs(update, context):
         )
     except Exception:
         pass
-

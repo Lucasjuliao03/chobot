@@ -234,7 +234,7 @@ async def enviar_subtemas(update, context, tema: str):
         icon = _progress_icon(acertos, total)
 
         label = f"{s}  |  {icon} {acertos}/{total}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"SUB|{s}")])
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"SUB|{tema}|{s}")])
 
     await update.callback_query.edit_message_text(
         f"📘 *Tema:* {tema}\n\n📂 Escolha o *SUBTEMA:*",

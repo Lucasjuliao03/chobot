@@ -463,8 +463,12 @@ async def callback_handler(update, context):
         return
 
     if data.startswith("CRSSUB|"):
-        sub_crs = data.split("|", 1)[1]
-        tema_crs = str(context.chat_data.get("tema_crs", "") or "").strip()
+        parts = data.split("|", 2)
+        if len(parts) == 3:
+            _, tema_crs, sub_crs = parts
+        else:
+            sub_crs = parts[1] if len(parts) > 1 else ""
+            tema_crs = str(context.chat_data.get("tema_crs", "") or "").strip()
         await iniciar_quiz_crs(update, context, user_id=user_id, tema=tema_crs, subtema=sub_crs, modo="TEMA", limite=20)
         return
 
@@ -476,8 +480,12 @@ async def callback_handler(update, context):
         return
 
     if data.startswith("SUB|"):
-        sub = data.split("|", 1)[1]
-        tema = context.chat_data.get("tema")
+        parts = data.split("|", 2)
+        if len(parts) == 3:
+            _, tema, sub = parts
+        else:
+            sub = parts[1] if len(parts) > 1 else ""
+            tema = context.chat_data.get("tema")
         await iniciar_quiz(update, context, user_id, tema, sub, limite=20)
         return
 
