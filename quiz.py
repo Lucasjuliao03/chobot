@@ -226,7 +226,16 @@ async def enviar_subtemas(update, context, tema: str):
     subtemas = TEMA_TO_SUBTEMAS.get(tema, [])
     keyboard = []
 
-    for s in subtemas:
+    # ⚠️ Telegram limita callback_data a 64 BYTES (não caracteres).
+    # Alguns subtemas de "LEGISLAÇÃO INSTITUCIONAL" estouram esse limite
+    # quando usamos "SUB|<tema>|<subtema>". Resultado: o Telegram rejeita
+    # a mensagem e "parece que não vai pra frente".
+    #
+    # Correção: quando passar de 64 bytes, usamos um token curto e guardamos
+    # o mapeamento no chat_data.
+
+    sub_map = {}
+    for i, s in enumerate(subtemas):
         qids = SUBTEMA_TO_QIDS.get((tema, s), [])
         total = len(qids)
 
@@ -234,7 +243,24 @@ async def enviar_subtemas(update, context, tema: str):
         icon = _progress_icon(acertos, total)
 
         label = f"{s}  |  {icon} {acertos}/{total}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"SUB|{tema}|{s}")])
+
+        cb_full = f"SUB|{tema}|{s}"
+        if len(cb_full.encode("utf-8")) <= 64:
+            cb = cb_full
+        else:
+            token = str(i)
+            sub_map[token] = s
+            cb = f"SUBI|{token}"
+
+        keyboard.append([InlineKeyboardButton(label, callback_data=cb)])
+
+    # salva o mapa só quando necessário
+    if sub_map:
+        context.chat_data["subtema_map"] = sub_map
+        context.chat_data["subtema_tema"] = tema
+    else:
+        context.chat_data.pop("subtema_map", None)
+        context.chat_data.pop("subtema_tema", None)
 
     await update.callback_query.edit_message_text(
         f"📘 *Tema:* {tema}\n\n📂 Escolha o *SUBTEMA:*",

@@ -479,6 +479,20 @@ async def callback_handler(update, context):
         await enviar_subtemas(update, context, tema)
         return
 
+    if data.startswith("SUBI|"):
+        # SUBTEMA tokenizado (evita estourar 64 bytes no callback_data)
+        token = data.split("|", 1)[1] if "|" in data else ""
+        tema = str(context.chat_data.get("subtema_tema", "") or "").strip()
+        sub_map = context.chat_data.get("subtema_map", {}) or {}
+        sub = str(sub_map.get(token, "") or "").strip()
+
+        if not tema or not sub:
+            await update.effective_chat.send_message("⚠️ Subtema inválido/expirado. Use /start e tente novamente.")
+            return
+
+        await iniciar_quiz(update, context, user_id, tema, sub, limite=20)
+        return
+
     if data.startswith("SUB|"):
         parts = data.split("|", 2)
         if len(parts) == 3:
