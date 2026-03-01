@@ -462,6 +462,19 @@ async def callback_handler(update, context):
         await enviar_subtemas_crs(update, context, tema_crs)
         return
 
+    if data.startswith("CRSSUBI|"):
+        token = data.split("|", 1)[1] if "|" in data else ""
+        tema_crs = str(context.chat_data.get("crs_subtema_tema", "") or "").strip()
+        sub_map = context.chat_data.get("crs_subtema_map", {}) or {}
+        sub_crs = str(sub_map.get(token, "") or "").strip()
+
+        if not tema_crs or not sub_crs:
+            await update.effective_chat.send_message("⚠️ Subtema CRS inválido/expirado. Use /start e tente novamente.")
+            return
+
+        await iniciar_quiz_crs(update, context, user_id=user_id, tema=tema_crs, subtema=sub_crs, modo="TEMA", limite=20)
+        return
+
     if data.startswith("CRSSUB|"):
         parts = data.split("|", 2)
         if len(parts) == 3:

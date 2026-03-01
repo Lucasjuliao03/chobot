@@ -184,7 +184,7 @@ async def enviar_menu_crs(update, context):
     await update.effective_chat.send_message(
         "🧭 *Questões CRS*\n\nEscolha o modo:",
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown",
+        # parse_mode="Markdown", # REMOVE ISTO
     )
 
 
@@ -209,7 +209,7 @@ async def enviar_temas_crs(update, context):
         await update.effective_chat.send_message(
             "📚 *Selecione o TEMA (CRS):*",
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown",
+            # parse_mode="Markdown",
         )
 
 
@@ -219,17 +219,33 @@ async def enviar_subtemas_crs(update, context, tema: str):
     keyboard = []
 
     if not subs:
-        # Se não houver subtema preenchido, cai direto no tema
         await iniciar_quiz_crs(update, context, user_id=user_id, tema=tema, subtema=None, modo="TEMA", limite=20)
         return
 
-    for sub in subs:
+    sub_map = {}
+    for i, sub in enumerate(subs):
         qids = SUBTEMA_TO_QIDS_CRS.get((tema, sub), [])
         total = len(qids)
         acertos, _ = _count_acertos_erros(user_id, qids)
         icon = _progress_icon(acertos, total)
         label = f"{sub}  |  {icon} {acertos}/{total}"
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"CRSSUB|{tema}|{sub}")])
+
+        cb_full = f"CRSSUB|{tema}|{sub}"
+        if len(cb_full.encode("utf-8")) <= 64:
+            cb = cb_full
+        else:
+            token = str(i)
+            sub_map[token] = sub
+            cb = f"CRSSUBI|{token}"
+
+        keyboard.append([InlineKeyboardButton(label, callback_data=cb)])
+
+    if sub_map:
+        context.chat_data["crs_subtema_map"] = sub_map
+        context.chat_data["crs_subtema_tema"] = tema
+    else:
+        context.chat_data.pop("crs_subtema_map", None)
+        context.chat_data.pop("crs_subtema_tema", None)
 
     context.chat_data["tema_crs"] = tema
     await update.callback_query.edit_message_text(
