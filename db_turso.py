@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 from datetime import datetime, timezone
 
 import libsql
@@ -15,8 +16,37 @@ if not TURSO_URL:
 if not TURSO_AUTH_TOKEN:
     raise RuntimeError("TURSO_AUTH_TOKEN não definido nas variáveis de ambiente.")
 
-# Uma conexão global (simples e rápida). Para carga alta, dá pra evoluir.
-_CONN = libsql.connect(database=TURSO_URL, auth_token=TURSO_AUTH_TOKEN)
+# ==========================================================
+# Conexão resiliente (auto-reconnect)
+# - Mantém o uso simples, mas evita "morrer" após longos períodos ocioso.
+# - Se a conexão cair/expirar, reconecta e tenta 1x novamente.
+# ==========================================================
+_CONN = None
+_CONN_LOCK = threading.Lock()
+
+
+def _new_conn():
+    return libsql.connect(database=TURSO_URL, auth_token=TURSO_AUTH_TOKEN)
+
+
+def _get_conn():
+    global _CONN
+    with _CONN_LOCK:
+        if _CONN is None:
+            _CONN = _new_conn()
+        return _CONN
+
+
+def _reconnect():
+    global _CONN
+    with _CONN_LOCK:
+        try:
+            if _CONN is not None:
+                _CONN.close()
+        except Exception:
+            pass
+        _CONN = _new_conn()
+        return _CONN
 
 
 def _utc_now_iso():
@@ -54,21 +84,38 @@ def _norm_qid(qid) -> str:
 
 
 def _fetchall(sql: str, params: tuple = ()):
-    cur = _CONN.cursor()
-    cur.execute(sql, params)
-    return cur.fetchall()
+    try:
+        cur = _get_conn().cursor()
+        cur.execute(sql, params)
+        return cur.fetchall()
+    except Exception:
+        cur = _reconnect().cursor()
+        cur.execute(sql, params)
+        return cur.fetchall()
 
 
 def _fetchone(sql: str, params: tuple = ()):
-    cur = _CONN.cursor()
-    cur.execute(sql, params)
-    return cur.fetchone()
+    try:
+        cur = _get_conn().cursor()
+        cur.execute(sql, params)
+        return cur.fetchone()
+    except Exception:
+        cur = _reconnect().cursor()
+        cur.execute(sql, params)
+        return cur.fetchone()
 
 
 def _exec(sql: str, params: tuple = ()):
-    cur = _CONN.cursor()
-    cur.execute(sql, params)
-    _CONN.commit()
+    try:
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        conn.commit()
+    except Exception:
+        conn = _reconnect()
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        conn.commit()
 
 
 # ==========================================================
@@ -110,7 +157,6 @@ def init_db():
     except Exception:
         pass
 
-
     _exec("""
     CREATE TABLE IF NOT EXISTS sent (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,7 +182,6 @@ def init_db():
         _exec("UPDATE sent SET source='GEN' WHERE source IS NULL OR TRIM(source)=''")
     except Exception:
         pass
-
 
 
 def record_answer(user_id: str, qid: str, acertou: bool, marcada: str, tema: str, subtema: str, source: str = 'GEN'):
