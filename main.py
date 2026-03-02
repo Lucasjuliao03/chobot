@@ -419,7 +419,7 @@ async def callback_handler(update, context):
             context.chat_data.pop("correta_exibida", None)
             context.chat_data.pop("qid_atual", None)
             context.chat_data.pop("perm_atual", None)
-	    context.chat_data.pop("pending_explain", None)
+            context.chat_data.pop("pending_explain", None)
 
             try:
                 await query.edit_message_reply_markup(reply_markup=None)
