@@ -85,6 +85,7 @@ async def start(update, context):
     context.chat_data.pop("correta_exibida", None)
     context.chat_data.pop("qid_atual", None)
     context.chat_data.pop("perm_atual", None)
+    context.chat_data.pop("pending_explain", None)
 
     await update.message.reply_text(
         "Escolha o banco de questões:",
@@ -418,6 +419,7 @@ async def callback_handler(update, context):
             context.chat_data.pop("correta_exibida", None)
             context.chat_data.pop("qid_atual", None)
             context.chat_data.pop("perm_atual", None)
+	    context.chat_data.pop("pending_explain", None)
 
             try:
                 await query.edit_message_reply_markup(reply_markup=None)
@@ -555,23 +557,58 @@ async def callback_handler(update, context):
         except Exception:
             pass
 
+        # ====== NOVA LÓGICA: feedback + botões Próxima / Explicação ======
+        context.chat_data["pending_explain"] = {
+            "qid": qid,
+            "source": source,
+            "correta": (correta_exibida or correta_original or "—"),
+            "acertou": bool(acertou),
+            "texto": (explicacao or "—"),
+        }
+
         cab = "✅ *Correto!*" if acertou else f"❌ *Errado.* Correta: *{correta_exibida or correta_original or '—'}*"
-        texto = f"{cab}\n\n📘 *Explicação:*\n{explicacao if explicacao else '—'}"
+
+        teclado = [[
+            InlineKeyboardButton("➡️ Próxima questão", callback_data="NEXTQ"),
+            InlineKeyboardButton("📖 Explicação", callback_data="SHOWEXPL"),
+        ]]
+
+        await query.message.chat.send_message(
+            cab,
+            reply_markup=InlineKeyboardMarkup(teclado),
+            parse_mode="Markdown",
+        )
+        return
+
+
+    if data == "SHOWEXPL":
+        pending = context.chat_data.get("pending_explain") or {}
+        texto = str(pending.get("texto") or "").strip()
+        correta = str(pending.get("correta") or "—").strip()
+
+        if not texto:
+            await query.message.chat.send_message("⚠️ Explicação indisponível. Responda uma questão primeiro.")
+            return
+
+        msg = f"📘 *Explicação* (correta: *{correta}*)\n\n{texto}"
 
         teclado = [[InlineKeyboardButton("➡️ Próxima questão", callback_data="NEXTQ")]]
 
         await query.message.chat.send_message(
-            texto,
+            msg,
             reply_markup=InlineKeyboardMarkup(teclado),
             parse_mode="Markdown",
         )
         return
 
     if data == "NEXTQ":
+        context.chat_data.pop("pending_explain", None)
+
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
+
         sess = context.chat_data.get("quiz", {}) or {}
         if str(sess.get("source") or "").upper() == "CRS":
             await enviar_proxima_crs(update, context)
